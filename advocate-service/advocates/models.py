@@ -11,6 +11,10 @@ class User(models.Model):
     class Meta:
         db_table = "users"
         managed = False
+        
+        USERNAME_FIELD = "email"
+        REQUIRED_FIELDS = []  
+
 
     def __str__(self):
         return f"{self.username} ({self.role})"
