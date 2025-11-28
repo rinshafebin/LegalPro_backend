@@ -64,33 +64,17 @@ class AdvocateRegisterSerializer(serializers.ModelSerializer):
     bar_council_id = serializers.CharField(
         validators=[RegexValidator(r'^[A-Za-z0-9]+$', 'Bar council ID must be alphanumeric')]
     )
-    email = serializers.EmailField(required=True)
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'password', 'confirm_password', 'bar_council_id']
-
-    def validate_username(self, value):
-        if User.objects.filter(username=value).exists():
-            raise serializers.ValidationError("Username already exists")
-        if not value.isalnum():
-            raise serializers.ValidationError("Username must be alphanumeric")
-        return value
+        fields = ['email', 'password', 'confirm_password', 'bar_council_id']
+        extra_kwargs = {
+            "email": {"required": True},
+        }
 
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("Email already exists")
-        return value
-
-    def validate_password(self, value):
-        if len(value) < 6:
-            raise serializers.ValidationError("Password must be at least 6 characters")
-        if not any(c.isupper() for c in value):
-            raise serializers.ValidationError("Password must contain at least one uppercase letter")
-        if not any(c.islower() for c in value):
-            raise serializers.ValidationError("Password must contain at least one lowercase letter")
-        if not any(c.isdigit() for c in value):
-            raise serializers.ValidationError("Password must contain at least one number")
         return value
 
     def validate_bar_council_id(self, value):
@@ -106,13 +90,19 @@ class AdvocateRegisterSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data.pop('confirm_password')
         bar_council_id = validated_data.pop('bar_council_id')
+
         user = User.objects.create_user(
-            username=validated_data['username'],
-            password=validated_data['password'],
             email=validated_data['email'],
+            password=validated_data['password'],
             role='advocate'
         )
-        AdvocateProfile.objects.create(user=user, bar_council_id=bar_council_id)
+
+        AdvocateProfile.objects.create(
+            user=user,
+            bar_council_id=bar_council_id,
+            full_name=user.email  # TEMP default
+        )
+        
         return user
 
 

@@ -48,38 +48,43 @@ class AdvocateRegisterView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = AdvocateRegisterSerializer(data=request.data, many=True)
+        serializer = AdvocateRegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        users = serializer.save()  # this is now a list
+        
+        user = serializer.save()  
 
-        # Send emails and prepare response
-        for user in users:
-            send_welcome_email_task.delay(user.email, user.username)
+        send_welcome_email_task.delay(user.email)
 
-        user_ids = [user.id for user in users]
         return custom_response(
-            "Advocates registered successfully",
+            "Advocate registered successfully",
             status_code=201,
-            data={"user_ids": user_ids}
+            data={"user_id": user.id}
         )
-
 
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        username = request.data.get("username")
+        print(request.data)
+        email = request.data.get("email")
         password = request.data.get("password")
-        user = authenticate(username=username, password=password)
+
+        if not email or not password:
+            return custom_response("Email and password required", status_code=400, status_type="error")
+
+        user = authenticate(request, email=email, password=password)
+
         if not user:
             return custom_response("Invalid credentials", status_code=400, status_type="error")
+
         if user.mfa_enabled:
             return custom_response(
                 "MFA required",
                 status_code=200,
                 data={"user_id": user.id, "mfa_type": user.mfa_type}
             )
+
         return custom_response(
             "Login successful",
             status_code=200,

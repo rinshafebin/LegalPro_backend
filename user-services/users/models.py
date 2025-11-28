@@ -10,8 +10,11 @@ class User(AbstractUser):
         ('advocate', 'Advocate'),
         ('admin', 'Admin'),
     )
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, db_index=True)
+
+    username = None  # Remove username field
     email = models.EmailField(unique=True)
+
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, db_index=True)
 
     mfa_enabled = models.BooleanField(default=False)
     mfa_type = models.CharField(
@@ -22,8 +25,11 @@ class User(AbstractUser):
     )
     mfa_secret = models.CharField(max_length=64, blank=True, null=True)
 
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = [] 
+
     def __str__(self):
-        return f"{self.username} ({self.role})"
+        return f"{self.email} ({self.role})"
 
     class Meta:
         db_table = 'users'
@@ -31,7 +37,7 @@ class User(AbstractUser):
             models.Index(fields=['role']),
             models.Index(fields=['email']),
         ]
-        ordering = ['username']
+        ordering = ['email']
 
 
 class Specialization(models.Model):
