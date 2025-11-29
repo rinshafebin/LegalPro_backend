@@ -1,43 +1,60 @@
+# users/models.py
 from django.db import models
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.utils import timezone
 import datetime
 
 
-class User(AbstractUser):
+class UserManager(BaseUserManager):
+    use_in_migrations = True
+
+    def create_user(self, email, password=None, role="client", **extra_fields):
+        if not email:
+            raise ValueError("Email must be provided")
+        email = self.normalize_email(email)
+        user = self.model(email=email, role=role, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+    def create_superuser(self, email, password=None, **extra_fields):
+        extra_fields.setdefault("role", "admin")
+        extra_fields.setdefault("is_staff", True)
+        extra_fields.setdefault("is_superuser", True)
+        return self.create_user(email, password, **extra_fields)
+
+
+class User(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = (
-        ('client', 'Client'),
-        ('advocate', 'Advocate'),
-        ('admin', 'Admin'),
+        ("client", "Client"),
+        ("advocate", "Advocate"),
+        ("admin", "Admin"),
     )
 
-    username = None  # Remove username field
     email = models.EmailField(unique=True)
-
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, db_index=True)
 
+    # Django required fields
+    is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
+
+    # MFA Fields
     mfa_enabled = models.BooleanField(default=False)
-    mfa_type = models.CharField(
-        max_length=10,
-        choices=[('TOTP', 'TOTP')],
-        blank=True,
-        null=True
-    )
+    mfa_type = models.CharField(max_length=10, choices=[("TOTP", "TOTP")], blank=True, null=True)
     mfa_secret = models.CharField(max_length=64, blank=True, null=True)
 
-    USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = [] 
+    USERNAME_FIELD = "email"
+    REQUIRED_FIELDS = []
+
+    objects = UserManager()
 
     def __str__(self):
         return f"{self.email} ({self.role})"
 
     class Meta:
-        db_table = 'users'
-        indexes = [
-            models.Index(fields=['role']),
-            models.Index(fields=['email']),
-        ]
-        ordering = ['email']
+        db_table = "users"
+        ordering = ["email"]
+        indexes = [models.Index(fields=["email"]), models.Index(fields=["role"])]
 
 
 class Specialization(models.Model):
@@ -48,7 +65,7 @@ class Specialization(models.Model):
 
 
 class ClientProfile(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='client_profile')
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="client_profile")
     full_name = models.CharField(max_length=100, blank=True, null=True)
     phone = models.CharField(max_length=20, db_index=True, blank=True, null=True)
     address_line1 = models.CharField(max_length=255, blank=True, null=True)
@@ -56,64 +73,56 @@ class ClientProfile(models.Model):
     city = models.CharField(max_length=120, blank=True, null=True)
     state = models.CharField(max_length=120, blank=True, null=True)
     pincode = models.CharField(max_length=20, blank=True, null=True)
-    profile_image = models.ImageField(upload_to='clients/', blank=True, null=True)
+    profile_image = models.ImageField(upload_to="clients/", blank=True, null=True)
 
     def __str__(self):
-        return self.full_name or self.user.username
+        return self.full_name or self.user.email
 
     class Meta:
-        db_table = 'client_profile'
-        indexes = [
-            models.Index(fields=['user']),
-            models.Index(fields=['phone']),
-        ]
+        db_table = "client_profile"
+        indexes = [models.Index(fields=["user"]), models.Index(fields=["phone"])]
 
 
 class AdvocateProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="advocate_profile")
-    
+
     # Personal info
     full_name = models.CharField(max_length=255)
     phone = models.CharField(max_length=20, blank=True, null=True)
     gender = models.CharField(max_length=10, blank=True, null=True)
     dob = models.DateField(blank=True, null=True)
-    
+
     # Professional info
     bar_council_id = models.CharField(max_length=100, unique=True)
     enrollment_year = models.IntegerField(blank=True, null=True)
     experience_years = models.IntegerField(default=0)
-    languages = models.CharField(max_length=255, blank=True, null=True)  # comma separated
+    languages = models.CharField(max_length=255, blank=True, null=True)
     specializations = models.ManyToManyField(Specialization, related_name="advocates", blank=True)
-    
+
     # Address info
     address_line1 = models.CharField(max_length=255, blank=True, null=True)
     address_line2 = models.CharField(max_length=255, blank=True, null=True)
     city = models.CharField(max_length=120, blank=True, null=True)
     state = models.CharField(max_length=120, blank=True, null=True)
     pincode = models.CharField(max_length=20, blank=True, null=True)
-    
+
     # Profile info
     profile_image = models.ImageField(upload_to="advocates/", blank=True, null=True)
     is_verified = models.BooleanField(default=False)
     rating = models.FloatField(default=0.0)
     cases_count = models.IntegerField(default=0)
     wins_count = models.IntegerField(default=0)
-    
-    # Timestamps
+
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return self.full_name or self.user.username
+        return self.full_name
 
     class Meta:
-        db_table = 'advocate_profile'
-        indexes = [
-            models.Index(fields=['user']),
-            models.Index(fields=['bar_council_id']),
-            models.Index(fields=['full_name']),
-        ]
-        ordering = ['full_name']
+        db_table = "advocate_profile"
+        ordering = ["full_name"]
+        indexes = [models.Index(fields=["user"]), models.Index(fields=["bar_council_id"]), models.Index(fields=["full_name"])]
 
 
 class OTP(models.Model):
@@ -130,9 +139,6 @@ class OTP(models.Model):
         self.save()
 
     class Meta:
-        db_table = 'otp'
-        indexes = [
-            models.Index(fields=['user']),
-            models.Index(fields=['code']),
-        ]
-        ordering = ['-created_at']
+        db_table = "otp"
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["user"]), models.Index(fields=["code"])]

@@ -1,3 +1,4 @@
+# users/views.py
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -7,23 +8,17 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from django.conf import settings
 
-from users.serializers import (
-    UserRegisterSerializer,
-    AdvocateRegisterSerializer,
-    ClientProfileSerializer,
-    AdvocateProfileSerializer
+from .serializers import (
+    UserRegisterSerializer, AdvocateRegisterSerializer, LoginSerializer,
+    ClientProfileSerializer, AdvocateProfileSerializer
 )
-from users.tasks import send_welcome_email_task
+from .tasks import send_welcome_email_task
 
 User = get_user_model()
 
 
 def custom_response(message, status_code=200, status_type="success", data=None):
-    response = {
-        "status": status_type,
-        "code": status_code,
-        "message": message,
-    }
+    response = {"status": status_type, "code": status_code, "message": message}
     if data:
         response["data"] = data
     return Response(response, status=status_code)
@@ -36,60 +31,52 @@ class UserRegisterView(APIView):
         serializer = UserRegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        send_welcome_email_task.delay(user.email, user.username)
-        return custom_response(
-            "User registered successfully",
-            status_code=201,
-            data={"user_id": user.id}
-        )
+        # send welcome email with email and full name (client profile)
+        full_name = getattr(user.client_profile, "full_name", user.email)
+        send_welcome_email_task.delay(user.email, full_name)
+        return custom_response("User registered successfully", status_code=201, data={"user_id": user.id})
 
 
 class AdvocateRegisterView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = AdvocateRegisterSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        
-        user = serializer.save()  
+        # Accept either single object or {"advocates": [...]} bulk payload
+        payload = request.data
+        created = []
 
-        send_welcome_email_task.delay(user.email)
+        if isinstance(payload, dict) and "advocates" in payload:
+            adv_list = payload["advocates"]
+        elif isinstance(payload, list):
+            adv_list = payload
+        else:
+            adv_list = [payload]
 
-        return custom_response(
-            "Advocate registered successfully",
-            status_code=201,
-            data={"user_id": user.id}
-        )
+        for adv_data in adv_list:
+            serializer = AdvocateRegisterSerializer(data=adv_data)
+            serializer.is_valid(raise_exception=True)
+            user = serializer.save()
+            created.append(user)
+            # send welcome email (use advocate profile full_name)
+            full_name = getattr(user.advocate_profile, "full_name", user.email)
+            send_welcome_email_task.delay(user.email, full_name)
+
+        user_ids = [u.id for u in created]
+        return custom_response("Advocate(s) registered successfully", status_code=201, data={"user_ids": user_ids})
 
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        print(request.data)
-        email = request.data.get("email")
-        password = request.data.get("password")
-
-        if not email or not password:
-            return custom_response("Email and password required", status_code=400, status_type="error")
-
-        user = authenticate(request, email=email, password=password)
-
-        if not user:
-            return custom_response("Invalid credentials", status_code=400, status_type="error")
+        serializer = LoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data["user"]
 
         if user.mfa_enabled:
-            return custom_response(
-                "MFA required",
-                status_code=200,
-                data={"user_id": user.id, "mfa_type": user.mfa_type}
-            )
+            return custom_response("MFA required", status_code=200, data={"user_id": user.id, "mfa_type": user.mfa_type})
 
-        return custom_response(
-            "Login successful",
-            status_code=200,
-            data={"user_id": user.id, "role": user.role}
-        )
+        return custom_response("Login successful", status_code=200, data={"user_id": user.id, "role": user.role})
 
 
 class GoogleLoginView(APIView):
@@ -99,13 +86,8 @@ class GoogleLoginView(APIView):
         token = request.data.get("token")
         if not token:
             return custom_response("Google token required", status_code=400, status_type="error")
-
         try:
-            info = id_token.verify_oauth2_token(
-                token,
-                google_requests.Request(),
-                settings.GOOGLE_CLIENT_ID
-            )
+            info = id_token.verify_oauth2_token(token, google_requests.Request(), settings.GOOGLE_CLIENT_ID)
         except ValueError:
             return custom_response("Invalid Google token", status_code=400, status_type="error")
 
@@ -113,18 +95,13 @@ class GoogleLoginView(APIView):
         if not email:
             return custom_response("Google account has no email", status_code=400, status_type="error")
 
-        user, created = User.objects.get_or_create(email=email, defaults={
-            "username": info.get("name") or email.split("@")[0],
-            "role": "client", 
-        })
-
+        user, created = User.objects.get_or_create(email=email, defaults={"role": "client"})
         if created:
-            send_welcome_email_task.delay(user.email, user.username)
-
-        return custom_response(
-            "Google login successful",
-            data={"user_id": user.id, "role": user.role}
-        )
+            # create client profile
+            from .models import ClientProfile
+            ClientProfile.objects.create(user=user, full_name=info.get("name") or email.split("@")[0])
+            send_welcome_email_task.delay(user.email, getattr(user, "client_profile").full_name)
+        return custom_response("Google login successful", data={"user_id": user.id, "role": user.role})
 
 
 class EnableMFAView(APIView):
