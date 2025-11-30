@@ -1,33 +1,65 @@
 from rest_framework import serializers
-from .models import Payment, Transaction, ExternalCase
+from .models import AdvocateProfile, Specialization
+
+class SpecializationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Specialization
+        fields = ["id", "name"]
+
+class AdvocateSerializer(serializers.ModelSerializer):
+    specializations = SpecializationSerializer(many=True)
+
+    class Meta:
+        model = AdvocateProfile
+        fields = [
+            "id",
+            "full_name",
+            "city",
+            "state",
+            "experience_years",
+            "rating",
+            "specializations",
+        ]
 
 
-class AdvocateSearchSerializer(serializers.Serializer):
+class AdvocateDetailSerializer(serializers.ModelSerializer):
+    specializations = SpecializationSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = AdvocateProfile
+        fields = [
+            "id",
+            "full_name",
+            "phone",
+            "gender",
+            "dob",
+            "bar_council_id",
+            "enrollment_year",
+            "experience_years",
+            "languages",
+            "city",
+            "state",
+            "address_line1",
+            "address_line2",
+            "pincode",
+            "profile_image",
+            "is_verified",
+            "rating",
+            "cases_count",
+            "wins_count",
+            "created_at",
+            "updated_at",
+            "specializations",
+        ]
+
+
+
+class CaseSerializer(serializers.Serializer):
     id = serializers.IntegerField()
-    username = serializers.CharField()
-    email = serializers.EmailField()
-    bar_council_id = serializers.CharField()
-
-
-class AppointmentCreateSerializer(serializers.Serializer):
+    title = serializers.CharField()
+    description = serializers.CharField()
     advocate_id = serializers.IntegerField()
-    start_time = serializers.DateTimeField()
-    end_time = serializers.DateTimeField()
-
-
-class PaymentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Payment
-        fields = "__all__"
-
-
-class TransactionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Transaction
-        fields = "__all__"
-
-
-class ExternalCaseSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ExternalCase
-        fields = "__all__"
+    client_id = serializers.IntegerField()
+    status = serializers.CharField()
+    created_at = serializers.DateTimeField()
+    updated_at = serializers.DateTimeField()

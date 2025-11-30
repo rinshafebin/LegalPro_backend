@@ -1,21 +1,9 @@
 from django.urls import path
-from .views import (
-    AppointmentCreateView,
-    AppointmentListView,
-    CreateOrderView,
-    VerifyPaymentView,
-    CaseListView,
-    CaseCreatedEvent,
-)
+from .views import AdvocateDetailView, AdvocateSearchView
 
 urlpatterns = [
-    path("appointments/create/", AppointmentCreateView.as_view()),
-    path("appointments/", AppointmentListView.as_view()),
-    
-    path("payments/order/", CreateOrderView.as_view()),
-    path("payments/verify/", VerifyPaymentView.as_view()),
+    path("advocates/search/", AdvocateSearchView.as_view(),name="advocate-search"),
+    path("advocates/<int:advocate_id>/", AdvocateDetailView.as_view(), name="advocate-detail"),
 
-    path("cases/", CaseListView.as_view()),
-
-    path("events/case-created/", CaseCreatedEvent.as_view()),
 ]
+

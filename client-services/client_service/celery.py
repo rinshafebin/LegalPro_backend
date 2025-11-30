@@ -1,4 +1,3 @@
-# client_service/celery_app.py
 import os
 from celery import Celery
 
