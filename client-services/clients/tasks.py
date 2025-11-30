@@ -3,11 +3,12 @@ from .models import Case
 
 @shared_task(name="case_service.fetch_cases_for_client")
 def fetch_cases_for_client(client_id):
-    # Query DB for cases
+
     cases = Case.objects.filter(client_id=client_id).values(
         'id', 'title', 'description', 'advocate_id', 'client_id', 'status', 'created_at', 'updated_at'
     )
     return list(cases)
+
 
 @shared_task(name="case_service.fetch_case_detail")
 def fetch_case_detail(case_id):
