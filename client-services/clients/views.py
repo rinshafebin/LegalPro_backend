@@ -1,53 +1,76 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from .models import AdvocateProfile
-from .serializers import AdvocateSerializer,AdvocateDetailSerializer
-from django.db.models import Q
 from rest_framework import status
+from clients.serializers import AdvocateProfileSerializer, CaseSerializer
+from client_service.celery import app
 
 class AdvocateSearchView(APIView):
     def get(self, request):
-        q = request.GET.get("q", "")
+        # Query params
+        name = request.GET.get("name")
         city = request.GET.get("city")
-        specialization = request.GET.get("specialization")
-        min_exp = request.GET.get("min_exp")
-        max_exp = request.GET.get("max_exp")
+        specialization_id = request.GET.get("specialization_id")
+        min_rating = request.GET.get("min_rating")
+        min_experience = request.GET.get("min_experience")
 
-        advocates = AdvocateProfile.objects.all()
+        # Call Celery task
+        task = app.send_task(
+            "client_service.tasks.get_advocates",
+            kwargs={
+                "name": name,
+                "city": city,
+                "specialization_id": specialization_id,
+                "min_rating": min_rating,
+                "min_experience": min_experience
+            }
+        )
 
-        # ---------------- FILTERS ----------------
-        if q:
-            advocates = advocates.filter(
-                Q(full_name__icontains=q)
-            )
+        result = task.get(timeout=20)  # Wait for Celery response
 
-        if city:
-            advocates = advocates.filter(city__icontains=city)
+        if not result:
+            return Response({"advocates": []}, status=status.HTTP_200_OK)
 
-        if specialization:
-            advocates = advocates.filter(
-                specializations__name__icontains=specialization
-            )
-
-        if min_exp:
-            advocates = advocates.filter(experience_years__gte=min_exp)
-
-        if max_exp:
-            advocates = advocates.filter(experience_years__lte=max_exp)
-
-        advocates = advocates.distinct()
-
-        serializer = AdvocateSerializer(advocates, many=True)
-        return Response(serializer.data)
+        serializer = AdvocateProfileSerializer(result, many=True)
+        return Response({"advocates": serializer.data}, status=status.HTTP_200_OK)
 
 
 
 class AdvocateDetailView(APIView):
     def get(self, request, advocate_id):
-        try:
-            advocate = AdvocateProfile.objects.get(id=advocate_id)
-        except AdvocateProfile.DoesNotExist:
+        # Call Celery task to fetch advocate
+        task = app.send_task(
+            "client_service.tasks.get_advocate_detail",
+            kwargs={"advocate_id": advocate_id}
+        )
+        advocate = task.get(timeout=20)
+
+        if not advocate:
             return Response({"error": "Advocate not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = AdvocateDetailSerializer(advocate)
-        return Response(serializer.data)
+        serializer = AdvocateProfileSerializer(advocate)
+        return Response({"advocate": serializer.data}, status=status.HTTP_200_OK)
+    
+    
+
+
+class CaseListView(APIView):
+    def get(self, request):
+        client_id = request.GET.get("client_id")  # could get from auth in future
+        task = app.send_task("client_service.tasks.get_cases_by_client", kwargs={"client_id": int(client_id)})
+        cases = task.get(timeout=20)
+        serializer = CaseSerializer(cases, many=True)
+        return Response({"cases": serializer.data}, status=status.HTTP_200_OK)
+
+
+class CaseDetailView(APIView):
+    def get(self, request, case_id):
+        client_id = request.GET.get("client_id")
+        task = app.send_task(
+            "client_service.tasks.get_case_detail",
+            kwargs={"case_id": int(case_id), "client_id": int(client_id)}
+        )
+        case = task.get(timeout=20)
+        if not case:
+            return Response({"error": "Case not found"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = CaseSerializer(case)
+        return Response({"case": serializer.data}, status=status.HTTP_200_OK)

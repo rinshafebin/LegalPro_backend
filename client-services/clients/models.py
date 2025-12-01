@@ -1,6 +1,7 @@
 from django.db import models
+from django.utils import timezone
 
-
+# Reference to users table (single DB)
 class User(models.Model):
     id = models.AutoField(primary_key=True)
     email = models.EmailField()
@@ -10,7 +11,6 @@ class User(models.Model):
         managed = False
         db_table = "users"
 
-
 class Specialization(models.Model):
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=100)
@@ -18,7 +18,6 @@ class Specialization(models.Model):
     class Meta:
         managed = False
         db_table = "specialization"
-
 
 class AdvocateProfile(models.Model):
     id = models.AutoField(primary_key=True)
@@ -57,8 +56,8 @@ class AdvocateProfile(models.Model):
     cases_count = models.IntegerField(default=0)
     wins_count = models.IntegerField(default=0)
 
-    created_at = models.DateTimeField()
-    updated_at = models.DateTimeField()
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         managed = False
@@ -67,16 +66,32 @@ class AdvocateProfile(models.Model):
 
 
 
+
 class Case(models.Model):
-    id = models.IntegerField(primary_key=True)
+    STATUS_CHOICES = [
+        ('Active', 'Active'),
+        ('Pending', 'Pending'),
+        ('Closed', 'Closed'),
+    ]
+
+    # Minimal fields needed for client view
+    id = models.AutoField(primary_key=True)
     title = models.CharField(max_length=255)
-    description = models.TextField(blank=True, null=True)
-    advocate_id = models.IntegerField()
-    client_id = models.IntegerField()
-    status = models.CharField(max_length=50)
-    created_at = models.DateTimeField()
-    updated_at = models.DateTimeField()
+    description = models.TextField()
+    case_number = models.CharField(max_length=50)
+    client_id = models.IntegerField(null=True)          # from user-service
+    advocate_id = models.IntegerField(null=True)        # from advocate/user-service
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending')
+    result = models.CharField(max_length=20, default='Pending')
+    hearing_date = models.DateField(null=True, blank=True)
+
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        managed = False  
-        db_table = "cases"
+        managed = False  # Django will not try to manage this table
+        db_table = 'case'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.title} ({self.status})"
