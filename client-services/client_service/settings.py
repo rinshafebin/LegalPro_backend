@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt', 
     'corsheaders',
     'clients',
+    'bookings',
 ]
 
 MIDDLEWARE = [
@@ -86,10 +87,13 @@ DATABASES = {
         'NAME': config('DB_NAME'),
         'USER': config('DB_USER'),
         'PASSWORD': config('DB_PASSWORD'),
-        'HOST': config('DB_HOST'),
-        'PORT': config('DB_PORT'),
+        'PORT': config('DB_PORT', default='5432'),
+        'HOST': config('DB_HOST', default='localhost'),
+
     }
 }
+
+
 
 
 # Password validation

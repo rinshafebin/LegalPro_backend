@@ -79,9 +79,10 @@ class Case(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField()
     case_number = models.CharField(max_length=50)
-    client_id = models.IntegerField(null=True)          # from user-service
-    advocate_id = models.IntegerField(null=True)        # from advocate/user-service
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending')
+    client_id = models.IntegerField(db_index=True)
+    advocate_id = models.IntegerField(db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending', db_index=True)
+
     result = models.CharField(max_length=20, default='Pending')
     hearing_date = models.DateField(null=True, blank=True)
 
@@ -89,7 +90,7 @@ class Case(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        managed = False  # Django will not try to manage this table
+        managed = False  
         db_table = 'case'
         ordering = ['-created_at']
 

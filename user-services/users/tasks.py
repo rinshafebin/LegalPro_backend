@@ -14,5 +14,4 @@ def send_welcome_email_task(email, full_name):
             fail_silently=False,
         )
     except Exception as e:
-        # don't raise; log to console for dev
         print(f"Failed to send welcome email: {e}")
