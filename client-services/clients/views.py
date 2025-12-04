@@ -1,9 +1,11 @@
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from client_service.celery import app
 
 class AdvocateSearchView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         task = app.send_task(
             "client_service.tasks.get_advocates",
@@ -11,8 +13,6 @@ class AdvocateSearchView(APIView):
                 "name": request.GET.get("name"),
                 "city": request.GET.get("city"),
                 "specialization_id": request.GET.get("specialization_id"),
-                "min_rating": request.GET.get("min_rating"),
-                "min_experience": request.GET.get("min_experience")
             }
         )
 
@@ -22,6 +22,8 @@ class AdvocateSearchView(APIView):
 
 
 class AdvocateDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, advocate_id):
         task = app.send_task(
             "client_service.tasks.get_advocate_detail",
@@ -37,6 +39,8 @@ class AdvocateDetailView(APIView):
 
 
 class CaseListView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         client_id = request.GET.get("client_id")
 
@@ -51,6 +55,7 @@ class CaseListView(APIView):
 
 
 class CaseDetailView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request, case_id):
         client_id = request.GET.get("client_id")
 

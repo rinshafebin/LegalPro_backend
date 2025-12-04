@@ -1,10 +1,11 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from bookings.serializers import BookingSerializer
+from rest_framework.permissions import IsAuthenticated
 from client_service.celery import app
 
 class BookingCreateView(APIView):
+    permission_classes = [IsAuthenticated]
     def post(self, request):
         data = request.data
 
@@ -25,6 +26,7 @@ class BookingCreateView(APIView):
 
 
 class BookingListView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         client_id = request.GET.get("client_id")
 
@@ -39,6 +41,7 @@ class BookingListView(APIView):
 
 
 class BookingDetailView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request, booking_id):
         client_id = request.GET.get("client_id")
 

@@ -1,7 +1,7 @@
 import os
 from celery import Celery
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "user_service.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "user_services.settings")
 
 app = Celery("user_service")
 
