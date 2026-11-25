@@ -1,4 +1,5 @@
 import pytest
+from cryptography.fernet import Fernet
 from httpx import AsyncClient
 from pydantic import ValidationError
 
@@ -58,6 +59,7 @@ def test_production_settings_reject_unsafe_values() -> None:
         "secret_key": "x" * 40,
         "database_url": "postgresql+asyncpg://u:p@db/x",
         "jwt_secret_key": "y" * 40,
+        "field_encryption_key": Fernet.generate_key().decode(),
     }
     with pytest.raises(ValidationError, match="DEBUG"):
         Settings(**base, debug=True)  # type: ignore[arg-type]
@@ -72,6 +74,7 @@ def test_cors_origins_accepts_comma_separated_string() -> None:
         secret_key="x",
         database_url="postgresql+asyncpg://u:p@db/x",
         jwt_secret_key="y",
+        field_encryption_key=Fernet.generate_key().decode(),
         cors_origins="http://a.com, http://b.com",
     )
     assert s.cors_origins == ["http://a.com", "http://b.com"]

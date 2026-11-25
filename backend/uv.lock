@@ -15,7 +15,6 @@ dependencies = [
     { name = "aioboto3" },
     { name = "aiosmtplib" },
     { name = "alembic" },
-    { name = "arq" },
     { name = "asyncpg" },
     { name = "cryptography" },
     { name = "fastapi" },
@@ -30,8 +29,9 @@ dependencies = [
     { name = "python-multipart" },
     { name = "qrcode", extra = ["pil"] },
     { name = "razorpay" },
-    { name = "redis" },
+    { name = "redis", extra = ["hiredis"] },
     { name = "requests" },
+    { name = "saq", extra = ["hiredis", "redis"] },
     { name = "sqladmin" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "structlog" },
@@ -53,7 +53,6 @@ requires-dist = [
     { name = "aioboto3", specifier = ">=15.5.0" },
     { name = "aiosmtplib", specifier = ">=5.1.3" },
     { name = "alembic", specifier = ">=1.20.1" },
-    { name = "arq", specifier = ">=0.28.0" },
     { name = "asyncpg", specifier = ">=0.32.0" },
     { name = "cryptography", specifier = ">=50.0.2" },
     { name = "fastapi", specifier = ">=0.165.0" },
@@ -68,8 +67,9 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.34" },
     { name = "qrcode", extras = ["pil"], specifier = ">=8.2" },
     { name = "razorpay", specifier = ">=2.0.1" },
-    { name = "redis", specifier = ">=5.3.1" },
+    { name = "redis", extras = ["hiredis"], specifier = ">=7.4.1,<8" },
     { name = "requests", specifier = ">=2.34.2" },
+    { name = "saq", extras = ["hiredis", "redis"], specifier = ">=0.26.5" },
     { name = "sqladmin", specifier = ">=0.32.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.9" },
     { name = "structlog", specifier = ">=26.1.0" },
@@ -391,19 +391,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/84/91/04067bac98f55bc9be663cc1442ea516b523d8ed658113c84d008313ccb8/argon2_cffi_bindings-26.2.0-cp315-abi3.abi3t-win32.whl", hash = "sha256:b60f1f12567f86a7087b1c4edb2b673a1e396703d3b6137f13b1f6cea8e1473f", size = 24745, upload-time = "2026-11-13T07:16:27.446Z" },
     { url = "https://files.pythonhosted.org/packages/39/b9/2799f5dda0bc7de972901321ba0faca8536b125afb1d71002170405c63d2/argon2_cffi_bindings-26.2.0-cp315-abi3.abi3t-win_amd64.whl", hash = "sha256:9f9f0215ddc8638b2003f8e8c5b0c378e0e976869c40911ac015f375a60fcca4", size = 26522, upload-time = "2026-11-13T07:16:28.538Z" },
     { url = "https://files.pythonhosted.org/packages/6d/ed/4177677a981464afa55c324ae575cc6b9752affa8668acc40eb6899f98fc/argon2_cffi_bindings-26.2.0-cp315-abi3.abi3t-win_arm64.whl", hash = "sha256:1a525e093acb8dd2cd85317577271251be1920ad4d1e5a05bffde9c7a53290cd", size = 26646, upload-time = "2026-11-13T07:16:29.771Z" },
-]
-
-[[package]]
-name = "arq"
-version = "0.28.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "click" },
-    { name = "redis", extra = ["hiredis"] },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a4/81/7f9db65a89c29ba374000309b9dd95509500045df5c7e22f26c3731b7380/arq-0.28.0.tar.gz", hash = "sha256:a458188aefc2d7ee17d136f80d8fa8df1d6eba4ceebdead87e9f172d027dc311", size = 416141, upload-time = "2026-04-16T10:50:23.893Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/48/32/66b616976c5058d434ca2017979bfffd784888177b16b5038abcec93954a/arq-0.28.0-py3-none-any.whl", hash = "sha256:b1696bf5614d60f4172a2c0cbdc177e23ba03a5eb9acc29bd8181f4ea71fff94", size = 26061, upload-time = "2026-04-16T10:50:22.321Z" },
 ]
 
 [[package]]
@@ -782,6 +769,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
+]
+
+[[package]]
+name = "croniter"
+version = "7.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/54/17/3c60d4cf8c8768f8a116328f94ddb2f205e64d5afbb1bcb85f315bfbbf42/croniter-7.0.0.tar.gz", hash = "sha256:a0b2568303c774f6a4ea2d4ce2e72b1ee911029c7070d64a1befe05cdb107f5a", size = 191123, upload-time = "2026-11-09T06:52:40.106Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4c/89/10f9987ebdef47dbe9db94e9c00dcbd91a6ff1aa46ad58bee5b50fa454c9/croniter-7.0.0-py3-none-any.whl", hash = "sha256:92090bce3cef195a037a46b78430c4cdd6250e90671d9d7dcd9e486147daaca4", size = 63225, upload-time = "2026-11-09T06:52:38.545Z" },
 ]
 
 [[package]]
@@ -2247,14 +2246,11 @@ wheels = [
 
 [[package]]
 name = "redis"
-version = "5.3.1"
+version = "7.4.1"
 source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyjwt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6a/cf/128b1b6d7086200c9f387bd4be9b2572a30b90745ef078bd8b235042dc9f/redis-5.3.1.tar.gz", hash = "sha256:ca49577a531ea64039b5a36db3d6cd1a0c7a60c34124d46924a45b956e8cf14c", size = 4626200, upload-time = "2025-07-25T08:06:27.778Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/51/93/05e7d4a65285066a74f48697f9b9cde5cfce71398033d69ed83c3d98f5c9/redis-7.4.1.tar.gz", hash = "sha256:1a1df5067062cf7cbe677994e391f8ee0840f499d370f1a71266e0dd3aa9308e", size = 4945742, upload-time = "2026-06-05T09:10:06.703Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7f/26/5c5fa0e83c3621db835cfc1f1d789b37e7fa99ed54423b5f519beb931aa7/redis-5.3.1-py3-none-any.whl", hash = "sha256:dc1909bd24669cc31b5f67a039700b16ec30571096c5f1f0d9d2324bff31af97", size = 272833, upload-time = "2025-07-25T08:06:26.317Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/2e/2677f3f93dae0497e7e33b6637302e7f3744efc553f34231183e32584885/redis-7.4.1-py3-none-any.whl", hash = "sha256:1fa4647af1c5e93a2c685aa248ee44cce092691146d41390518dabe9a99839b0", size = 410171, upload-time = "2026-06-05T09:10:05.128Z" },
 ]
 
 [package.optional-dependencies]
@@ -2312,6 +2308,26 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/62/74/8d69dcb7a9efe8baa2046891735e5dfe433ad558ae23d9e3c14c633d1d58/s3transfer-0.14.0.tar.gz", hash = "sha256:eff12264e7c8b4985074ccce27a3b38a485bb7f7422cc8046fee9be4983e4125", size = 151547, upload-time = "2025-09-09T19:23:31.089Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/48/f0/ae7ca09223a81a1d890b2557186ea015f6e0502e9b8cb8e1813f1d8cfa4e/s3transfer-0.14.0-py3-none-any.whl", hash = "sha256:ea3b790c7077558ed1f02a3072fb3cb992bbbd253392f4b6e9e8976941c7d456", size = 85712, upload-time = "2025-09-09T19:23:30.041Z" },
+]
+
+[[package]]
+name = "saq"
+version = "0.26.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "croniter" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2b/c1/22381822245402fbff14a990e76a6a8373312e26bf0fdaaba81db27f45c6/saq-0.26.5.tar.gz", hash = "sha256:75e8664ca1351f46a400d28d0441612be4feb6c51ab206cdfad9dc06fcb42acc", size = 79129, upload-time = "2026-10-29T03:38:20.069Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/48/e43331d49a341b977d5574783f0e6d54dbcef0a62593c8d7c9948ce1b6c0/saq-0.26.5-py3-none-any.whl", hash = "sha256:7305d3fadedd7aaceebe36b9d298377f322385e38187b8869ba49b73e4e07693", size = 64696, upload-time = "2026-10-29T03:38:18.898Z" },
+]
+
+[package.optional-dependencies]
+hiredis = [
+    { name = "redis", extra = ["hiredis"] },
+]
+redis = [
+    { name = "redis" },
 ]
 
 [[package]]

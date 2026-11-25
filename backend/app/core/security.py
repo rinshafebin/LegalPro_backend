@@ -1,6 +1,5 @@
 """Password hashing, JWTs, OTP hashing and at-rest encryption helpers."""
 
-import base64
 import hashlib
 import hmac
 import secrets
@@ -8,12 +7,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from functools import lru_cache
 from typing import Any
 
 import jwt
-from cryptography.fernet import Fernet, InvalidToken
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pwdlib import PasswordHash
 from starlette.concurrency import run_in_threadpool
 
@@ -144,20 +143,57 @@ def codes_match(code: str, code_hash: str) -> bool:
 # ---------------------------------------------------------------- at-rest encryption
 
 
-def _fernet() -> Fernet:
-    secret = get_settings().secret_key.get_secret_value().encode()
-    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"field-encryption").derive(
-        secret
-    )
-    return Fernet(base64.urlsafe_b64encode(key))
+@lru_cache(maxsize=4)
+def _build_multi_fernet(keys: tuple[str, ...]) -> MultiFernet:
+    return MultiFernet([Fernet(key) for key in keys])
+
+
+def _multi_fernet() -> MultiFernet:
+    keys = tuple(k.get_secret_value() for k in get_settings().field_encryption_key)
+    return _build_multi_fernet(keys)
 
 
 def encrypt_str(value: str) -> str:
-    return _fernet().encrypt(value.encode()).decode()
+    """Encrypt with the primary (first) FIELD_ENCRYPTION_KEY."""
+    return _multi_fernet().encrypt(value.encode()).decode()
 
 
 def decrypt_str(value: str) -> str:
+    """Decrypt with any configured FIELD_ENCRYPTION_KEY."""
     try:
-        return _fernet().decrypt(value.encode()).decode()
-    except InvalidToken as exc:  # SECRET_KEY rotated without re-encrypting
-        raise ValueError("Cannot decrypt value") from exc
+        return _multi_fernet().decrypt(value.encode()).decode()
+    except InvalidToken as exc:
+        raise ValueError("Cannot decrypt value with any configured FIELD_ENCRYPTION_KEY") from exc
+
+
+def rotate_encrypted_str(value: str) -> str:
+    """Re-encrypt a value under the primary key (it may currently use an older key)."""
+    try:
+        return _multi_fernet().rotate(value.encode()).decode()
+    except InvalidToken as exc:
+        raise ValueError("Cannot decrypt value with any configured FIELD_ENCRYPTION_KEY") from exc
+
+
+# ---------------------------------------------------------------- email verification
+
+
+def _email_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(
+        get_settings().secret_key.get_secret_value(), salt="email-verification"
+    )
+
+
+def create_email_verification_token(user_id: uuid.UUID, email: str) -> str:
+    """Signed token bound to the user AND the address, so it dies if the email changes."""
+    return _email_serializer().dumps({"uid": str(user_id), "email": email})
+
+
+def read_email_verification_token(token: str) -> tuple[uuid.UUID, str]:
+    max_age = get_settings().email_verification_ttl_hours * 3600
+    try:
+        data = _email_serializer().loads(token, max_age=max_age)
+        return uuid.UUID(data["uid"]), str(data["email"])
+    except SignatureExpired as exc:
+        raise InvalidTokenError("Verification link has expired") from exc
+    except (BadSignature, KeyError, TypeError, ValueError) as exc:
+        raise InvalidTokenError("Invalid verification link") from exc

@@ -53,7 +53,11 @@ class User(TimestampMixin, Base):
         back_populates="user", lazy="raise", cascade="all, delete-orphan", uselist=False
     )
     advocate_profile: Mapped["AdvocateProfile | None"] = relationship(
-        back_populates="user", lazy="raise", cascade="all, delete-orphan", uselist=False
+        back_populates="user",
+        lazy="raise",
+        cascade="all, delete-orphan",
+        uselist=False,
+        foreign_keys="AdvocateProfile.user_id",
     )
 
     def __repr__(self) -> str:

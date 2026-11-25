@@ -116,5 +116,9 @@ class ResetPasswordIn(BaseModel):
     new_password: Password
 
 
+class VerifyEmailIn(BaseModel):
+    token: str = Field(min_length=10, max_length=1024)
+
+
 class MessageOut(BaseModel):
     message: str

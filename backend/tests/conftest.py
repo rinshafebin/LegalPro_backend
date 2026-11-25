@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +39,7 @@ def _assert_safe_test_targets() -> None:
 async def _schema() -> AsyncIterator[None]:
     _assert_safe_test_targets()
     async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield
@@ -72,6 +74,7 @@ class FakeJobQueue:
 
     def __init__(self) -> None:
         self.jobs: list[tuple[str, dict[str, Any]]] = []
+        self.aborted: list[str] = []
 
     async def enqueue(
         self,
@@ -83,6 +86,9 @@ class FakeJobQueue:
         **kwargs: Any,
     ) -> None:
         self.jobs.append((job, {**kwargs, "_defer_until": defer_until, "_job_id": job_id}))
+
+    async def abort(self, job_id: str) -> None:
+        self.aborted.append(job_id)
 
     async def close(self) -> None:
         return None

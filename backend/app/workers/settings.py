@@ -1,31 +1,30 @@
-"""ARQ worker entrypoint: `arq app.workers.settings.WorkerSettings`."""
+"""SAQ worker entrypoint: `saq app.workers.settings.settings`."""
 
-from typing import Any, ClassVar
+from typing import Any
 
-from arq.connections import RedisSettings
+from saq.types import SettingsDict
 
-from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.workers import tasks
+from app.workers.queue import create_saq_queue
 
 logger = get_logger(__name__)
 
 
-async def startup(_ctx: dict[str, Any]) -> None:
+async def startup(_ctx: Any) -> None:
     configure_logging()
     logger.info("worker_startup")
 
 
-async def shutdown(_ctx: dict[str, Any]) -> None:
+async def shutdown(_ctx: Any) -> None:
     logger.info("worker_shutdown")
 
 
-class WorkerSettings:
-    functions: ClassVar[list[Any]] = [tasks.heartbeat, tasks.send_email]
-    cron_jobs: ClassVar[list[Any]] = []
-    on_startup = startup
-    on_shutdown = shutdown
-    redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
-    max_jobs = 20
-    job_timeout = 60
-    max_tries = 5
+settings: SettingsDict[Any] = {
+    "queue": create_saq_queue(),
+    "functions": [tasks.heartbeat, tasks.send_email],
+    "cron_jobs": [],
+    "concurrency": 20,
+    "startup": startup,
+    "shutdown": shutdown,
+}

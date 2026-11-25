@@ -20,6 +20,7 @@ from app.modules.auth.schemas import (
     RegisterOut,
     ResetPasswordIn,
     TokenPair,
+    VerifyEmailIn,
 )
 from app.modules.auth.tokens import issue_token_pair
 from app.modules.users.service import to_user_out
@@ -90,6 +91,32 @@ async def logout(data: RefreshIn) -> None:
 )
 async def logout_all(user: CurrentUser, session: SessionDep) -> None:
     await service.logout_everywhere(session, user)
+
+
+# ---------------------------------------------------------------- email verification
+
+
+@router.post(
+    "/email/verify",
+    response_model=MessageOut,
+    dependencies=[Depends(limit_by_ip("verify_email", 20, 3600))],
+    description="Confirms the address using the token from the verification email link.",
+)
+async def verify_email(data: VerifyEmailIn, session: SessionDep) -> MessageOut:
+    await service.verify_email(session, data.token)
+    return MessageOut(message="Email verified")
+
+
+@router.post(
+    "/email/verify/resend",
+    response_model=MessageOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(limit_by_ip("verify_email_resend", 10, 3600))],
+)
+async def resend_verification(user: CurrentUser, session: SessionDep) -> MessageOut:
+    await rate_limit.hit(f"verify_email_resend:user:{user.id}", 3, 3600)
+    await service.resend_verification_email(session, user)
+    return MessageOut(message="Verification email sent")
 
 
 # ---------------------------------------------------------------- MFA

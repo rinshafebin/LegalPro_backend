@@ -19,3 +19,21 @@ def password_reset(code: str) -> tuple[str, str]:
         f"It expires in {minutes} minutes and can be used once.\n"
         "If you did not request a password reset, you can ignore this email.\n",
     )
+
+
+def verify_email(full_name: str, link: str) -> tuple[str, str]:
+    app = get_settings().app_name
+    hours = get_settings().email_verification_ttl_hours
+    return (
+        f"Welcome to {app}: please verify your email",
+        f"Hello {full_name},\n\nThank you for registering with {app}.\n\n"
+        f"Please confirm your email address by opening this link:\n{link}\n\n"
+        f"The link expires in {hours} hours.\n",
+    )
+
+
+def advocate_verified(full_name: str) -> tuple[str, str]:
+    return (
+        "Your advocate profile has been verified",
+        f"Hello {full_name},\n\nYour profile has been verified and now appears in public search.\n",
+    )

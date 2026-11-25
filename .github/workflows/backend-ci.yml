@@ -50,6 +50,7 @@ jobs:
       REDIS_URL: redis://localhost:6379/15
       TEST_REDIS_URL: redis://localhost:6379/15
       CORS_ORIGINS: http://localhost:5173
+      FIELD_ENCRYPTION_KEY: v7N5LcSZ-93Igu9nICjAJgJku9kd6YLHZaY34hcKt58=
       RAZORPAY_KEY_ID: rzp_test_ci
       RAZORPAY_KEY_SECRET: ci-razorpay-secret
       RAZORPAY_WEBHOOK_SECRET: ci-razorpay-webhook-secret

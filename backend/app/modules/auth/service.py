@@ -22,12 +22,14 @@ from app.core.security import (
     InvalidTokenError,
     TokenType,
     codes_match,
+    create_email_verification_token,
     decode_token,
     decrypt_str,
     encrypt_str,
     generate_numeric_code,
     hash_code,
     hash_password,
+    read_email_verification_token,
     verify_password,
 )
 from app.modules.advocates.models import AdvocateProfile
@@ -42,7 +44,7 @@ from app.modules.auth.schemas import (
 )
 from app.modules.clients.models import ClientProfile
 from app.modules.users.models import User, UserRole
-from app.modules.users.service import to_user_out
+from app.modules.users.service import get_profile, to_user_out
 
 logger = get_logger(__name__)
 
@@ -82,7 +84,7 @@ async def register_client(session: AsyncSession, data: ClientRegisterIn) -> User
     )
     user.client_profile = ClientProfile(full_name=data.full_name, phone=data.phone)
     await _commit_new_user(session, user)
-    await _queue_email(user.email, emails.welcome(data.full_name))
+    await send_verification_email(user, data.full_name)
     logger.info("user_registered", user_id=str(user.id), role=user.role.value)
     return user
 
@@ -105,9 +107,46 @@ async def register_advocate(session: AsyncSession, data: AdvocateRegisterIn) -> 
         full_name=data.full_name, phone=data.phone, bar_council_id=bar_id
     )
     await _commit_new_user(session, user)
-    await _queue_email(user.email, emails.welcome(data.full_name))
+    await send_verification_email(user, data.full_name)
     logger.info("user_registered", user_id=str(user.id), role=user.role.value)
     return user
+
+
+# ---------------------------------------------------------------- email verification
+
+
+def verification_link(user: User) -> str:
+    token = create_email_verification_token(user.id, user.email)
+    return f"{get_settings().frontend_url.rstrip('/')}/verify-email?token={token}"
+
+
+async def send_verification_email(user: User, full_name: str) -> None:
+    await _queue_email(user.email, emails.verify_email(full_name, verification_link(user)))
+
+
+async def verify_email(session: AsyncSession, token: str) -> User:
+    try:
+        user_id, email = read_email_verification_token(token)
+    except InvalidTokenError as exc:
+        raise BadRequestError(str(exc), code="invalid_token") from exc
+
+    user = await session.get(User, user_id)
+    # The token is bound to the address it was sent to.
+    if user is None or not user.is_active or user.email != email:
+        raise BadRequestError("Invalid verification link", code="invalid_token")
+    if not user.email_verified:
+        user.email_verified = True
+        await session.commit()
+        logger.info("email_verified", user_id=str(user.id))
+    return user
+
+
+async def resend_verification_email(session: AsyncSession, user: User) -> None:
+    if user.email_verified:
+        raise ConflictError("Email is already verified")
+    profile = await get_profile(session, user)
+    full_name = profile.full_name if profile is not None else user.email
+    await send_verification_email(user, full_name)
 
 
 # ---------------------------------------------------------------- login

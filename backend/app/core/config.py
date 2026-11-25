@@ -3,6 +3,7 @@
 from functools import lru_cache
 from typing import Annotated, Literal, Self
 
+from cryptography.fernet import Fernet
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -19,6 +20,13 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     secret_key: SecretStr
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # Base URL of the web app; used for links in emails (e.g. email verification).
+    frontend_url: str = "http://localhost:5173"
+
+    # Fernet keys for at-rest field encryption (MFA secrets, queued email payloads).
+    # Comma-separated, newest first: the first key encrypts, all keys decrypt. To rotate,
+    # prepend a new key, run `python -m app.scripts.rotate_field_encryption`, then drop the old.
+    field_encryption_key: Annotated[list[SecretStr], NoDecode]
 
     # --- Infrastructure ---
     database_url: str
@@ -36,6 +44,7 @@ class Settings(BaseSettings):
     otp_ttl_seconds: int = 300
     google_client_id: str = ""
     mfa_issuer: str = "Advocate Platform"
+    email_verification_ttl_hours: int = 48
 
     # --- Email ---
     smtp_host: str = "localhost"
@@ -50,7 +59,7 @@ class Settings(BaseSettings):
     razorpay_key_secret: SecretStr = SecretStr("")
     razorpay_webhook_secret: SecretStr = SecretStr("")
 
-    # --- Object storage (S3 / MinIO) ---
+    # --- Object storage (S3-compatible) ---
     s3_endpoint_url: str | None = None
     s3_public_endpoint_url: str | None = None
     s3_region: str = "us-east-1"
@@ -65,6 +74,29 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
+
+    @field_validator("field_encryption_key", mode="before")
+    @classmethod
+    def _split_keys(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [key.strip() for key in value.split(",") if key.strip()]
+        return value
+
+    @field_validator("field_encryption_key")
+    @classmethod
+    def _check_fernet_keys(cls, keys: list[SecretStr]) -> list[SecretStr]:
+        if not keys:
+            raise ValueError("FIELD_ENCRYPTION_KEY needs at least one key")
+        for key in keys:
+            try:
+                Fernet(key.get_secret_value())
+            except ValueError as exc:
+                raise ValueError(
+                    "FIELD_ENCRYPTION_KEY entries must be Fernet keys "
+                    '(generate: python -c "from cryptography.fernet import Fernet; '
+                    'print(Fernet.generate_key().decode())")'
+                ) from exc
+        return keys
 
     @model_validator(mode="after")
     def _apply_test_overrides(self) -> Self:
@@ -84,6 +116,14 @@ class Settings(BaseSettings):
                 raise ValueError("Wildcard CORS origin is not allowed in production")
             if len(self.jwt_secret_key.get_secret_value()) < 32:
                 raise ValueError("JWT_SECRET_KEY must be at least 32 characters in production")
+            if len(self.secret_key.get_secret_value()) < 32:
+                raise ValueError("SECRET_KEY must be at least 32 characters in production")
+            keys = {k.get_secret_value() for k in self.field_encryption_key}
+            others = {self.secret_key.get_secret_value(), self.jwt_secret_key.get_secret_value()}
+            if keys & others:
+                raise ValueError("FIELD_ENCRYPTION_KEY must differ from SECRET_KEY/JWT_SECRET_KEY")
+            if len(keys) != len(self.field_encryption_key):
+                raise ValueError("FIELD_ENCRYPTION_KEY contains duplicate keys")
         return self
 
     @property

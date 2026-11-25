@@ -1,4 +1,5 @@
-from typing import Literal
+from collections.abc import Awaitable
+from typing import Literal, cast
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -37,7 +38,7 @@ async def readiness(session: SessionDep, redis: RedisDep) -> HealthOut | JSONRes
         logger.exception("readiness_db_failed")
         db_ok = False
     try:
-        await redis.ping()
+        await cast(Awaitable[bool], redis.ping())
     except Exception:
         logger.exception("readiness_redis_failed")
         redis_ok = False

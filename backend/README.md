@@ -3,7 +3,7 @@
 FastAPI modular monolith that replaces the old Django microservices.
 
 **Stack:** Python 3.13 · uv · FastAPI · Pydantic v2 · SQLAlchemy 2 (async) + asyncpg · Alembic ·
-PostgreSQL 16 · Redis 7 · ARQ · S3 (SeaweedFS locally) · SQLAdmin
+PostgreSQL 16 · Redis 7 · SAQ · S3 (SeaweedFS locally) · SQLAdmin
 
 ## Quick start (Docker)
 
@@ -29,7 +29,7 @@ uv sync                                   # creates .venv from uv.lock
 createdb advocate_dev && createdb advocate_test
 uv run alembic upgrade head
 uv run uvicorn app.main:app --reload      # API
-uv run arq app.workers.settings.WorkerSettings   # background worker
+uv run saq app.workers.settings.settings   # background worker
 ```
 
 ## Quality checks (same as CI)
@@ -87,6 +87,7 @@ Every error response has the same shape:
 | `POST /api/v1/auth/logout`, `/logout/all` | Revoke one refresh token, or every token of the user |
 | `POST /api/v1/auth/mfa/setup` → `/mfa/confirm` | MFA only turns on after the first code is confirmed |
 | `POST /api/v1/auth/password/forgot` → `/password/reset` | 6-digit code by email, hashed, single-use, 5-minute expiry |
+| `POST /api/v1/auth/email/verify` (+ `/resend`) | Signed link token from the welcome email, bound to the address, 48 h expiry |
 | `GET/PATCH /api/v1/users/me` | Current user + profile |
 
 - Access tokens last 15 minutes; refresh tokens last 7 days and are tracked in Redis.
@@ -95,12 +96,48 @@ Every error response has the same shape:
 - Client IPs come from uvicorn. It only trusts `X-Forwarded-For` from addresses in the
   `FORWARDED_ALLOW_IPS` env var (default `127.0.0.1`). In production, set that to your proxy's
   IP, never `*`.
-- TOTP secrets are encrypted at rest with a key derived from `SECRET_KEY`. Rotating
-  `SECRET_KEY` means re-enrolling MFA.
+- TOTP secrets and queued email payloads are encrypted with `FIELD_ENCRYPTION_KEY`
+  (separate from `SECRET_KEY`), see [Key rotation](#key-rotation).
 - Queued email payloads are encrypted, so reset codes and addresses never appear in Redis or
   worker logs.
 
 ## Background jobs
 
-App code only calls `get_job_queue().enqueue(...)` (`app/workers/queue.py`). The ARQ-specific
-code lives in `app/workers/queue.py` and `app/workers/settings.py`.
+Jobs run on [SAQ](https://github.com/tobymao/saq) over Redis. App code only calls
+`get_job_queue().enqueue(...)`, `.abort(...)` (`app/workers/queue.py`); the SAQ-specific code lives
+in `app/workers/queue.py` and `app/workers/settings.py`. Register new jobs in
+`settings["functions"]`.
+
+## Advocates, clients and teams
+
+| Endpoint | Who |
+|---|---|
+| `GET /api/v1/advocates?q=&city=&specialization=&language=&min_experience=&max_experience=&page=&page_size=` | Public. Verified, active advocates only |
+| `GET /api/v1/advocates/{id}` | Public. `id` is always the advocate's `User.id` |
+| `GET/PATCH /api/v1/advocates/me` | Advocate (profile, languages, fee, specializations by slug) |
+| `GET/PATCH /api/v1/clients/me` | Client |
+| `GET /api/v1/specializations` · `POST` | Public list · admin create |
+| `/api/v1/teams` (CRUD, `/members`) | Verified advocates. Lead manages; members can view and leave; others get 404 |
+| `GET /api/v1/admin/advocates?status=pending` · `POST …/{id}/verify` · `/unverify` | Admin. Verify requires the advocate's email to be verified |
+
+## Admin users
+
+Admins can't self-register. Create one with:
+
+```bash
+uv run python -m app.scripts.create_admin admin@example.com          # prompts for password
+docker compose exec api python -m app.scripts.create_admin admin@example.com
+```
+
+## Key rotation
+
+`FIELD_ENCRYPTION_KEY` is a comma-separated list of Fernet keys, newest first. The first key
+encrypts; every key can decrypt.
+
+1. Prepend a new key: `FIELD_ENCRYPTION_KEY=<new>,<old>`, then deploy.
+2. Re-encrypt stored values: `uv run python -m app.scripts.rotate_field_encryption`
+3. After queued jobs and pending MFA setups made with the old key are gone (minutes), remove the
+   old key and deploy again.
+
+`SECRET_KEY` signs email-verification links and hashes reset codes. Rotating it only
+invalidates outstanding links and codes.

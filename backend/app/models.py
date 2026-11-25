@@ -5,9 +5,26 @@ feature module's `models` import here.
 """
 
 from app.core.db import Base
-from app.modules.advocates.models import AdvocateProfile
+from app.modules.advocates.models import (
+    AdvocateProfile,
+    AdvocateTeam,
+    Specialization,
+    TeamMember,
+    advocate_specializations,
+)
 from app.modules.auth.models import PasswordResetCode
 from app.modules.clients.models import ClientProfile
 from app.modules.users.models import User, UserRole
 
-__all__ = ["AdvocateProfile", "Base", "ClientProfile", "PasswordResetCode", "User", "UserRole"]
+__all__ = [
+    "AdvocateProfile",
+    "AdvocateTeam",
+    "Base",
+    "ClientProfile",
+    "PasswordResetCode",
+    "Specialization",
+    "TeamMember",
+    "User",
+    "UserRole",
+    "advocate_specializations",
+]

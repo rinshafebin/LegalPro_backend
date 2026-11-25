@@ -97,7 +97,7 @@ services:
 
   worker:
     <<: *app
-    command: ["arq", "app.workers.settings.WorkerSettings"]
+    command: ["saq", "app.workers.settings.settings"]
     volumes: ["./app:/app/app"]
     depends_on:
       db: { condition: service_healthy }

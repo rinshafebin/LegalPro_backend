@@ -9,7 +9,9 @@ from app.core.db import engine
 from app.core.errors import ERROR_RESPONSE_SCHEMA, register_exception_handlers
 from app.core.logging import RequestIdMiddleware, configure_logging, get_logger
 from app.core.redis import close_redis
+from app.modules.advocates import router as advocates
 from app.modules.auth.router import router as auth_router
+from app.modules.clients.router import router as clients_router
 from app.modules.health.router import router as health_router
 from app.modules.users.router import router as users_router
 from app.workers.queue import get_job_queue
@@ -61,6 +63,11 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router, prefix=settings.api_prefix)
     app.include_router(users_router, prefix=settings.api_prefix)
+    app.include_router(clients_router, prefix=settings.api_prefix)
+    app.include_router(advocates.router, prefix=settings.api_prefix)
+    app.include_router(advocates.specializations_router, prefix=settings.api_prefix)
+    app.include_router(advocates.teams_router, prefix=settings.api_prefix)
+    app.include_router(advocates.admin_router, prefix=settings.api_prefix)
     return app
 
 
