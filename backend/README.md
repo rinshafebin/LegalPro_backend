@@ -141,3 +141,36 @@ encrypts; every key can decrypt.
 
 `SECRET_KEY` signs email-verification links and hashes reset codes. Rotating it only
 invalidates outstanding links and codes.
+
+## Bookings & payments
+
+| Endpoint | Who |
+|---|---|
+| `GET/PUT /api/v1/advocates/me/availability` | Advocate. Weekly windows in the advocate's own timezone |
+| `GET /api/v1/advocates/{id}/slots?start_date=&days=` | Public. Free slots in UTC |
+| `POST /api/v1/bookings` | Client with verified email |
+| `GET /api/v1/bookings`, `GET /bookings/{id}` | The booking's client or advocate (others get 404) |
+| `POST /bookings/{id}/cancel` · `/reschedule` · `/complete` | Either party · either party (confirmed only) · advocate after the end time |
+| `POST /api/v1/payments/orders` → Razorpay Checkout → `POST /payments/verify` | Client |
+| `POST /api/v1/payments/webhook` | Razorpay (signature-authenticated) |
+
+How it works:
+- All times are stored in UTC. Availability is local wall-clock time in `advocate_profiles.timezone`
+  (default `Asia/Kolkata`). DST gaps are skipped, and slot lengths are real elapsed time.
+- Overlapping active bookings (`pending_payment`, `confirmed`) are refused by Postgres exclusion
+  constraints (`btree_gist` + `tstzrange`), per advocate and per client.
+- Bookings must be at least `BOOKING_MIN_LEAD_MINUTES` ahead and at most `BOOKING_HORIZON_DAYS`
+  ahead, and must start exactly on one of the advocate's slots. Only verified, active advocates
+  with a fee can be booked.
+- The fee is copied onto the booking. The Razorpay order amount comes from that copy and is
+  never taken from the client. A fee of 0 confirms immediately.
+- Unpaid bookings expire after `BOOKING_PAYMENT_TIMEOUT_MINUTES` (SAQ job
+  `booking:{id}:expire`, plus a once-a-minute sweep), which frees the slot.
+- Reminders go out 24 h and 1 h before (`booking:{id}:reminder:{kind}:{start_epoch}`). Cancel
+  and reschedule abort them, and the reminder job re-checks the booking before sending.
+- Webhooks: HMAC signature is checked (400 + log on failure). Each event id is stored, so a
+  redelivery changes nothing. Order id, amount and currency must match (otherwise logged and
+  acknowledged without effect). A payment that arrives after expiry revives the booking if the
+  slot is still free; otherwise it's flagged `refund_status = pending_review`.
+- **Refunds are not automated yet.** Cancelling a paid booking flags the payment
+  `pending_review`.

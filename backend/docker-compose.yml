@@ -18,6 +18,8 @@ x-app: &app
     S3_SECRET_KEY: devsecret-local-only
     SMTP_HOST: mailpit
     SMTP_PORT: "1025"
+    # Override for local testing, e.g. BOOKING_PAYMENT_TIMEOUT_MINUTES=1 docker compose up
+    BOOKING_PAYMENT_TIMEOUT_MINUTES: ${BOOKING_PAYMENT_TIMEOUT_MINUTES:-15}
   depends_on:
     db:
       condition: service_healthy

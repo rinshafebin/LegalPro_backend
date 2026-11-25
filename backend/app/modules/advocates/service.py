@@ -81,6 +81,30 @@ async def get_my_profile(session: AsyncSession, user: User) -> AdvocateProfile:
     return profile
 
 
+# Fields an admin checks against the bar council record when verifying an advocate.
+VERIFIED_IDENTITY_FIELDS = frozenset({"full_name", "enrollment_year"})
+
+
+def apply_identity_changes(profile: AdvocateProfile, changes: dict[str, object]) -> bool:
+    """Send a verified advocate back to pending review if a verified identity field changes.
+
+    Called by every endpoint that can edit these fields. Returns True if it reset them.
+    """
+    changed = any(
+        field in changes
+        and changes[field] is not None
+        and changes[field] != getattr(profile, field)
+        for field in VERIFIED_IDENTITY_FIELDS
+    )
+    if changed and profile.is_verified:
+        profile.is_verified = False
+        profile.verified_at = None
+        profile.verified_by_id = None
+        logger.info("advocate_reverification_required", advocate_id=str(profile.user_id))
+        return True
+    return False
+
+
 async def update_my_profile(
     session: AsyncSession, user: User, data: AdvocateMeUpdateIn
 ) -> AdvocateProfile:
@@ -91,8 +115,9 @@ async def update_my_profile(
     if slugs is not None:
         profile.specializations = await _specializations_by_slug(session, slugs)
 
+    apply_identity_changes(profile, changes)
     for field, value in changes.items():
-        if field in {"full_name", "experience_years", "languages"} and value is None:
+        if field in {"full_name", "experience_years", "languages", "timezone"} and value is None:
             continue  # NOT NULL columns: ignore explicit nulls
         setattr(profile, field, value)
 

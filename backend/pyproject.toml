@@ -27,6 +27,7 @@ dependencies = [
     "sqladmin>=0.32.0",
     "sqlalchemy[asyncio]>=2.1.9",
     "structlog>=26.1.0",
+    "tzdata>=2026.6",
     "uvicorn[standard]>=0.54.0",
 ]
 

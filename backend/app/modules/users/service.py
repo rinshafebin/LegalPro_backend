@@ -41,6 +41,10 @@ async def to_user_out(session: AsyncSession, user: User) -> UserOut:
 async def update_me(session: AsyncSession, user: User, data: MeUpdateIn) -> UserOut:
     profile = await get_profile(session, user)
     changes = data.model_dump(exclude_unset=True)
+    if isinstance(profile, AdvocateProfile):
+        from app.modules.advocates.service import apply_identity_changes  # avoid import cycle
+
+        apply_identity_changes(profile, changes)
     if profile is not None:
         for field, value in changes.items():
             if field == "full_name" and value is None:

@@ -286,3 +286,41 @@ async def test_client_profile_get_and_update(client: AsyncClient, db_session: As
         "state": None,
         "pincode": "682001",
     }
+
+
+# ---------------------------------------------------------------- re-verification
+
+
+@pytest.mark.parametrize(
+    ("url", "payload"),
+    [
+        ("/advocates/me", {"full_name": "Anil K. Renamed"}),
+        ("/advocates/me", {"enrollment_year": 2010}),
+        ("/users/me", {"full_name": "Anil K. Renamed"}),  # second path to the same field
+    ],
+)
+async def test_identity_change_sends_verified_advocate_back_to_review(
+    client: AsyncClient, directory: Directory, url: str, payload: dict[str, object]
+) -> None:
+    advocate = directory.criminal_kochi
+    resp = await client.patch(f"{API}{url}", headers=advocate.headers, json=payload)
+    assert resp.status_code == 200, resp.text
+
+    me = (await client.get(f"{API}/advocates/me", headers=advocate.headers)).json()
+    assert me["is_verified"] is False
+    assert me["verified_at"] is None
+    assert (await client.get(f"{API}/advocates/{advocate.id}")).status_code == 404
+    assert "Anil Kumar" not in _names(await _search(client))
+
+
+async def test_non_identity_changes_keep_verification(
+    client: AsyncClient, directory: Directory
+) -> None:
+    advocate = directory.criminal_kochi
+    resp = await client.patch(
+        f"{API}/advocates/me",
+        headers=advocate.headers,
+        json={"bio": "Updated bio", "full_name": "Anil Kumar", "city": "Kochi"},  # name unchanged
+    )
+    assert resp.status_code == 200
+    assert resp.json()["is_verified"] is True

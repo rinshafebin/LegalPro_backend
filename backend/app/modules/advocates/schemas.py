@@ -2,6 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
@@ -21,6 +22,14 @@ def _normalize_languages(values: list[str]) -> list[str]:
     return list(seen)
 
 
+def _check_timezone(value: str) -> str:
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("Unknown IANA timezone, e.g. 'Asia/Kolkata'") from exc
+    return value
+
+
 def _check_enrollment_year(value: int | None) -> int | None:
     if value is not None and not 1950 <= value <= datetime.now(UTC).year:
         raise ValueError("Enrollment year is out of range")
@@ -29,6 +38,7 @@ def _check_enrollment_year(value: int | None) -> int | None:
 
 Languages = Annotated[list[str], Field(max_length=10), AfterValidator(_normalize_languages)]
 EnrollmentYear = Annotated[int | None, AfterValidator(_check_enrollment_year)]
+TimeZoneName = Annotated[str, Field(max_length=64), AfterValidator(_check_timezone)]
 
 
 # ---------------------------------------------------------------- specializations
@@ -63,6 +73,7 @@ class AdvocatePublicOut(BaseModel):
     experience_years: int
     languages: list[str]
     consultation_fee: Decimal | None
+    timezone: str
     city: str | None
     state: str | None
     specializations: list[SpecializationOut]
@@ -88,6 +99,7 @@ class AdvocateMeUpdateIn(BaseModel):
     experience_years: int | None = Field(default=None, ge=0, le=80)
     languages: Languages | None = None
     consultation_fee: Fee | None = None
+    timezone: TimeZoneName | None = None
     address_line1: str | None = Field(default=None, max_length=255)
     address_line2: str | None = Field(default=None, max_length=255)
     city: str | None = Field(default=None, min_length=2, max_length=120)

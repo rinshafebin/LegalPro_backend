@@ -23,6 +23,7 @@ from app.core.email import open_message
 from app.core.redis import get_redis
 from app.main import app
 from app.models import Base
+from app.modules.payments.gateway import set_gateway
 from app.workers.queue import JobQueue, get_job_queue, set_job_queue
 
 
@@ -40,6 +41,7 @@ async def _schema() -> AsyncIterator[None]:
     _assert_safe_test_targets()
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield
@@ -107,6 +109,32 @@ def jobs() -> Iterator[FakeJobQueue]:
     set_job_queue(fake)
     yield fake
     set_job_queue(original)
+
+
+class FakeGateway:
+    """Stands in for Razorpay: hands out order ids and records what was requested."""
+
+    key_id = "rzp_test_fake"
+
+    def __init__(self) -> None:
+        self.orders: list[dict[str, Any]] = []
+
+    async def create_order(
+        self, *, amount_paise: int, currency: str, receipt: str, notes: dict[str, str]
+    ) -> str:
+        order_id = f"order_fake_{len(self.orders) + 1}"
+        self.orders.append(
+            {"id": order_id, "amount": amount_paise, "currency": currency, "receipt": receipt}
+        )
+        return order_id
+
+
+@pytest.fixture(autouse=True)
+def gateway() -> Iterator[FakeGateway]:
+    fake = FakeGateway()
+    set_gateway(fake)
+    yield fake
+    set_gateway(None)
 
 
 @pytest.fixture

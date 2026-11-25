@@ -95,6 +95,10 @@ class AdvocateProfile(TimestampMixin, Base):
         ARRAY(String(40)), default=list, server_default="{}"
     )
     consultation_fee: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    # IANA zone the advocate's weekly availability is written in. Bookings are stored in UTC.
+    timezone: Mapped[str] = mapped_column(
+        String(64), default="Asia/Kolkata", server_default="Asia/Kolkata"
+    )
 
     address_line1: Mapped[str | None] = mapped_column(String(255))
     address_line2: Mapped[str | None] = mapped_column(String(255))

@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = False
     email_from: str = "no-reply@example.com"
 
+    # --- Bookings ---
+    default_advocate_timezone: str = "Asia/Kolkata"
+    booking_horizon_days: int = 60
+    booking_min_lead_minutes: int = 30
+    booking_payment_timeout_minutes: int = 15
+    booking_currency: str = "INR"
+
     # --- Payments (Razorpay) ---
     razorpay_key_id: str = ""
     razorpay_key_secret: SecretStr = SecretStr("")
