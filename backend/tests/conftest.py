@@ -6,8 +6,12 @@ os.environ.setdefault("LOG_JSON", "false")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
 os.environ.setdefault("GOOGLE_CLIENT_ID", "test-google-client-id")
 
+import asyncio
+import subprocess
+import sys
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,8 +25,8 @@ from app.core.config import get_settings
 from app.core.db import engine, get_session
 from app.core.email import open_message
 from app.core.redis import get_redis
+from app.core.storage import set_storage
 from app.main import app
-from app.models import Base
 from app.modules.payments.gateway import set_gateway
 from app.workers.queue import JobQueue, get_job_queue, set_job_queue
 
@@ -36,14 +40,34 @@ def _assert_safe_test_targets() -> None:
         raise RuntimeError("Refusing to run tests against Redis DB 0; set TEST_REDIS_URL")
 
 
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+
+def _run_migrations(database_url: str) -> None:
+    result = subprocess.run(  # noqa: S603 - fixed interpreter and arguments
+        [sys.executable, "-m", "alembic", "-x", f"db_url={database_url}", "upgrade", "head"],
+        cwd=BACKEND_DIR,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Migrations failed:\n{result.stderr[-3000:]}")
+
+
 @pytest.fixture(scope="session", autouse=True)
 async def _schema() -> AsyncIterator[None]:
+    """Build the test schema by running the real Alembic migrations.
+
+    Testing against migrated tables (not `create_all`) catches migrations that drift from
+    the models in ways `alembic check` can't see, e.g. stale CHECK constraints.
+    """
     _assert_safe_test_targets()
     async with engine.begin() as conn:
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
+    await engine.dispose()
+    await asyncio.to_thread(_run_migrations, get_settings().database_url)
     yield
     await engine.dispose()
 
@@ -118,6 +142,9 @@ class FakeGateway:
 
     def __init__(self) -> None:
         self.orders: list[dict[str, Any]] = []
+        self.refunds: list[dict[str, Any]] = []
+        self.refund_status = "pending"  # Razorpay usually processes refunds asynchronously
+        self.refund_error: Exception | None = None
 
     async def create_order(
         self, *, amount_paise: int, currency: str, receipt: str, notes: dict[str, str]
@@ -128,6 +155,15 @@ class FakeGateway:
         )
         return order_id
 
+    async def refund(
+        self, *, payment_id: str, amount_paise: int, notes: dict[str, str]
+    ) -> tuple[str, str]:
+        if self.refund_error is not None:
+            raise self.refund_error
+        refund_id = f"rfnd_fake_{len(self.refunds) + 1}"
+        self.refunds.append({"id": refund_id, "payment_id": payment_id, "amount": amount_paise})
+        return refund_id, self.refund_status
+
 
 @pytest.fixture(autouse=True)
 def gateway() -> Iterator[FakeGateway]:
@@ -135,6 +171,33 @@ def gateway() -> Iterator[FakeGateway]:
     set_gateway(fake)
     yield fake
     set_gateway(None)
+
+
+class FakeStorage:
+    """In-memory object store; presigned URLs are fake but carry key + filename."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, tuple[bytes, str]] = {}
+
+    async def put(self, key: str, data: bytes, content_type: str) -> None:
+        self.objects[key] = (data, content_type)
+
+    async def presigned_get(
+        self, key: str, *, filename: str, content_type: str, ttl_seconds: int
+    ) -> str:
+        assert key in self.objects
+        return f"https://storage.test/{key}?filename={filename}&ttl={ttl_seconds}&sig=fake"
+
+    async def delete(self, key: str) -> None:
+        self.objects.pop(key, None)
+
+
+@pytest.fixture(autouse=True)
+def storage() -> Iterator[FakeStorage]:
+    fake = FakeStorage()
+    set_storage(fake)
+    yield fake
+    set_storage(None)
 
 
 @pytest.fixture

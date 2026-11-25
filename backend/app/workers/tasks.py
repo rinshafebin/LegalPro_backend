@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import email
 from app.core.db import SessionLocal
 from app.modules.bookings import service as bookings
+from app.modules.cases import service as cases
+from app.modules.payments import service as payments
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
@@ -53,3 +55,17 @@ async def expire_stale_bookings(ctx: Any) -> int:
 async def send_booking_reminder(ctx: Any, *, booking_id: str, kind: str, start_ts: int) -> bool:
     async with _session(ctx) as session:
         return await bookings.send_reminder(session, uuid.UUID(booking_id), kind, start_ts)
+
+
+async def issue_refund(ctx: Any, *, payment_id: str) -> str:
+    job = (ctx or {}).get("job")
+    final_attempt = job is None or not job.retryable  # SAQ bumps attempts before running
+    async with _session(ctx) as session:
+        return await payments.issue_refund(
+            session, uuid.UUID(payment_id), final_attempt=final_attempt
+        )
+
+
+async def send_hearing_reminder(ctx: Any, *, hearing_id: str, kind: str, start_ts: int) -> int:
+    async with _session(ctx) as session:
+        return await cases.send_hearing_reminder(session, uuid.UUID(hearing_id), kind, start_ts)

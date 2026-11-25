@@ -14,6 +14,7 @@ from app.modules.advocates.models import (
 )
 from app.modules.auth.models import PasswordResetCode
 from app.modules.bookings.models import AvailabilityRule, Booking
+from app.modules.cases.models import Case, CaseDocument, CaseMember, CaseNote, Hearing
 from app.modules.clients.models import ClientProfile
 from app.modules.payments.models import Payment, WebhookEvent
 from app.modules.users.models import User, UserRole
@@ -24,7 +25,12 @@ __all__ = [
     "AvailabilityRule",
     "Base",
     "Booking",
+    "Case",
+    "CaseDocument",
+    "CaseMember",
+    "CaseNote",
     "ClientProfile",
+    "Hearing",
     "PasswordResetCode",
     "Payment",
     "Specialization",

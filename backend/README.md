@@ -9,7 +9,7 @@ PostgreSQL 16 · Redis 7 · SAQ · S3 (SeaweedFS locally) · SQLAdmin
 
 ```bash
 cp .env.example .env            # then set SECRET_KEY and JWT_SECRET_KEY
-docker compose up --build       # API_PORT=8010 docker compose up  if 8000 is taken
+docker compose up --build       # if ports are taken: API_PORT=8010 DB_HOST_PORT=5434 docker compose up
 ```
 
 | URL | What |
@@ -172,5 +172,48 @@ How it works:
   redelivery changes nothing. Order id, amount and currency must match (otherwise logged and
   acknowledged without effect). A payment that arrives after expiry revives the booking if the
   slot is still free; otherwise it's flagged `refund_status = pending_review`.
-- **Refunds are not automated yet.** Cancelling a paid booking flags the payment
-  `pending_review`.
+- Rescheduling stops `RESCHEDULE_CUTOFF_HOURS` (24 h) before the start.
+
+### Refund policy
+
+| Situation | Refund |
+|---|---|
+| Client cancels at least `CANCELLATION_FULL_REFUND_HOURS` (24 h) before the start | Full |
+| Client cancels later, or doesn't show up | None (`not_eligible`) |
+| Advocate cancels at any time | Full |
+| Payment lands after the slot was lost, or on a cancelled booking | Full, automatic |
+
+Refunds run as SAQ job `payment:{id}:refund`, which calls Razorpay and retries with backoff.
+After the final failed attempt the status becomes `failed`. `refund.processed` and
+`refund.failed` webhooks finish the job, and redeliveries are ignored. Only full refunds are
+issued, so a retry can never over-refund. Statuses that need an admin: `failed`,
+`pending_review`.
+
+## Cases
+
+| Endpoint | Who |
+|---|---|
+| `POST /api/v1/cases` | Verified advocate, from one of their confirmed/completed bookings (the client comes from the booking) |
+| `GET /api/v1/cases`, `GET/PATCH /cases/{id}` | Participants; only the lead edits; a closed case is read-only until reopened |
+| `/cases/{id}/members` | Lead adds/removes verified advocates; members can leave |
+| `/cases/{id}/notes` | Participants; `is_private` notes are hidden from the client; authors edit their own |
+| `/cases/{id}/documents` (+ `/download`) | Multipart upload; download via short-lived presigned URL |
+| `/cases/{id}/hearings` | Advocates on the case schedule/update; 24 h and 1 h reminders to everyone on the case |
+
+- **One access rule:** `app/modules/cases/access.py` → `visible_to(user)`, meaning client, lead
+  advocate or member. Every case endpoint goes through it. Everyone else gets 404. Admins are
+  deliberately not included, because case content is privileged.
+- **Case numbers** come from a Postgres sequence: `CASE-<year>-<000001>`.
+- **Documents:**
+  - Allowed types are PDF, PNG, JPEG, DOCX and TXT, detected from the file content. The
+    client's Content-Type and file extension are ignored.
+  - Uploads larger than `CASE_DOCUMENT_MAX_MB` are refused with 413 while streaming.
+  - Storage keys are `cases/{case}/{uuid}.{ext}` and never contain the user's filename.
+  - Objects are private. Downloads use `attachment` presigned URLs signed for
+    `S3_PUBLIC_ENDPOINT_URL`.
+  - Advocates choose `visible_to_client`. Anything a client uploads is always visible to them.
+
+## Testing notes
+
+The test suite builds its schema by running the Alembic migrations, not `create_all`. This
+catches migration drift that `alembic check` can't see, such as CHECK constraints on enums.

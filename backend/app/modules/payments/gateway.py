@@ -33,6 +33,12 @@ class PaymentGateway(Protocol):
         """Create an order and return its id."""
         ...
 
+    async def refund(
+        self, *, payment_id: str, amount_paise: int, notes: dict[str, str]
+    ) -> tuple[str, str]:
+        """Refund a captured payment. Returns (refund_id, status)."""
+        ...
+
 
 class RazorpayGateway:
     def __init__(self, key_id: str, key_secret: str) -> None:
@@ -53,6 +59,19 @@ class RazorpayGateway:
         except Exception as exc:  # SDK raises several unrelated exception types
             logger.exception("razorpay_order_failed", receipt=receipt)
             raise PaymentGatewayError("The payment provider is unavailable; try again") from exc
+
+    async def refund(
+        self, *, payment_id: str, amount_paise: int, notes: dict[str, str]
+    ) -> tuple[str, str]:
+        data = {"amount": amount_paise, "speed": "normal", "notes": notes}
+        try:
+            refund: dict[str, Any] = await run_in_threadpool(
+                self._client.payment.refund, payment_id, data
+            )
+            return str(refund["id"]), str(refund.get("status", "pending"))
+        except Exception as exc:
+            logger.exception("razorpay_refund_failed", payment_id=payment_id)
+            raise PaymentGatewayError("Refund request to the payment provider failed") from exc
 
 
 _gateway: PaymentGateway | None = None

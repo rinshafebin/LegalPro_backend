@@ -255,8 +255,12 @@ async def test_payment_after_expiry_revives_booking_if_slot_is_free(
     assert await _status(client, world, booking["id"]) == "confirmed"
 
 
-async def test_payment_after_slot_was_taken_is_flagged_for_refund(
-    client: AsyncClient, world: World, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
+async def test_payment_after_slot_was_taken_is_refunded_automatically(
+    client: AsyncClient,
+    world: World,
+    db_session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+    jobs: FakeJobQueue,
 ) -> None:
     booking = await _pending_booking(client, world)
     order = await _order(client, world, booking["id"])
@@ -276,7 +280,11 @@ async def test_payment_after_slot_was_taken_is_flagged_for_refund(
     assert await _status(client, world, booking["id"]) == "expired"
     payment = await db_session.scalar(select(Payment))
     assert payment is not None
-    assert payment.refund_status is RefundStatus.PENDING_REVIEW
+    assert payment.refund_status is RefundStatus.REQUESTED
+    assert payment.refund_amount_paise == order["amount"]  # full refund
+    assert ("issue_refund", f"payment:{payment.id}:refund") in [
+        (n, kw["_job_id"]) for n, kw in jobs.jobs
+    ]
 
 
 # ---------------------------------------------------------------- cancel / reschedule / complete
@@ -290,7 +298,7 @@ async def _confirmed_booking(client: AsyncClient, world: World, index: int = -1)
     return booking
 
 
-async def test_cancelling_paid_booking_flags_refund_and_aborts_reminders(
+async def test_advocate_cancelling_paid_booking_refunds_and_aborts_reminders(
     client: AsyncClient, world: World, jobs: FakeJobQueue, db_session: AsyncSession
 ) -> None:
     booking = await _confirmed_booking(client, world)
@@ -309,7 +317,8 @@ async def test_cancelling_paid_booking_flags_refund_and_aborts_reminders(
 
     payment = await db_session.scalar(select(Payment))
     assert payment is not None
-    assert payment.refund_status is RefundStatus.PENDING_REVIEW
+    assert payment.refund_status is RefundStatus.REQUESTED  # advocate cancels -> full refund
+    assert payment.refund_amount_paise == payment.amount_paise
 
 
 async def test_reschedule_moves_booking_and_reminders(

@@ -197,11 +197,12 @@ async def test_advocate_profile_validation(
 async def test_specializations_public_list_admin_create(
     client: AsyncClient, db_session: AsyncSession, directory: Directory
 ) -> None:
-    listed = await client.get(f"{API}/specializations")
-    assert [s["slug"] for s in listed.json()] == ["criminal-law", "family-law"]
+    listed = [s["slug"] for s in (await client.get(f"{API}/specializations")).json()]
+    assert {"criminal-law", "family-law"} <= set(listed)
+    assert len(listed) == 14  # seeded by the migration
 
     admin = await make_user(db_session, UserRole.ADMIN, "admin@example.com")
-    body = {"slug": "tax-law", "name": "Tax Law"}
+    body = {"slug": "maritime-law", "name": "Maritime Law"}
     assert (await client.post(f"{API}/specializations", json=body)).status_code == 401
     advocate = await client.post(
         f"{API}/specializations", json=body, headers=directory.criminal_kochi.headers

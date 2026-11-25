@@ -19,7 +19,13 @@ from app.modules.bookings.models import ACTIVE_STATUSES, AvailabilityRule, Booki
 from app.modules.bookings.schemas import AvailabilityIn, BookingCreateIn, BookingOut, PartyOut
 from app.modules.bookings.slots import Slot, free_slots, generate_slots, rules_overlap
 from app.modules.clients.models import ClientProfile
-from app.modules.payments.models import Payment, PaymentStatus, RefundStatus
+from app.modules.payments.models import Payment, PaymentStatus
+from app.modules.payments.refunds import (
+    Canceller,
+    enqueue_refund,
+    refundable_paise,
+    request_refund,
+)
 from app.modules.users.models import User
 from app.workers.queue import get_job_queue
 
@@ -425,25 +431,32 @@ async def to_booking_outs(session: AsyncSession, bookings: list[Booking]) -> lis
 async def cancel_booking(
     session: AsyncSession, user: User, booking_id: uuid.UUID, reason: str | None
 ) -> Booking:
-    """Either party can cancel an active booking.
-
-    Refunds are not automated yet: a captured payment is flagged `pending_review`.
-    """
+    """Either party can cancel an active booking; a paid booking is refunded per policy."""
     booking = await get_visible_booking(session, user, booking_id)
     if booking.status not in ACTIVE_STATUSES:
         raise ConflictError(f"A {booking.status.value} booking can't be cancelled")
     was_confirmed = booking.status is BookingStatus.CONFIRMED
 
+    now = utcnow()
     booking.status = BookingStatus.CANCELLED
-    booking.cancelled_at = utcnow()
+    booking.cancelled_at = now
     booking.cancelled_by_id = user.id
     booking.cancel_reason = reason
-    payment = await session.scalar(select(Payment).where(Payment.booking_id == booking.id))
+
+    refund_payment_id: uuid.UUID | None = None
+    payment = await session.scalar(
+        select(Payment).where(Payment.booking_id == booking.id).with_for_update()
+    )
     if payment is not None and payment.status is PaymentStatus.CAPTURED:
-        payment.refund_status = RefundStatus.PENDING_REVIEW
+        by = Canceller.CLIENT if user.id == booking.client_id else Canceller.ADVOCATE
+        amount = refundable_paise(payment.amount_paise, booking.start_at, now, by)
+        if request_refund(payment, amount, reason=f"cancelled_by_{by.value}"):
+            refund_payment_id = payment.id
     await session.commit()
     logger.info("booking_cancelled", booking_id=str(booking.id), by=str(user.id))
 
+    if refund_payment_id is not None:
+        await enqueue_refund(refund_payment_id)
     await get_job_queue().abort(expire_job_id(booking.id))
     await _abort_reminders(booking.id, booking.start_at)
     if was_confirmed:
@@ -465,6 +478,13 @@ async def reschedule_booking(
     booking = await get_visible_booking(session, user, booking_id)
     if booking.status is not BookingStatus.CONFIRMED:
         raise ConflictError("Only confirmed bookings can be rescheduled; cancel and rebook instead")
+    cutoff = timedelta(hours=get_settings().reschedule_cutoff_hours)
+    if booking.start_at - utcnow() < cutoff:
+        raise ConflictError(
+            f"Bookings can only be rescheduled up to {cutoff.total_seconds() / 3600:g} hours "
+            "before the start",
+            code="reschedule_window_closed",
+        )
     profile = await _get_advocate_profile(session, booking.advocate_id)
     slot = await _resolve_slot(session, profile, new_start)
     if slot.start == booking.start_at:

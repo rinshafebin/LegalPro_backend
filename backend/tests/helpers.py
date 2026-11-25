@@ -115,6 +115,9 @@ async def make_user(
 
 
 async def make_specialization(session: AsyncSession, slug: str, name: str) -> None:
+    """Get-or-create (the migrations seed common practice areas)."""
+    if await session.scalar(select(Specialization.id).where(Specialization.slug == slug)):
+        return
     session.add(Specialization(slug=slug, name=name))
     await session.commit()
 
@@ -160,3 +163,31 @@ async def make_advocate(
     session.add(user)
     await session.commit()
     return Actor(id=user.id, email=user.email, headers=_headers_for(user))
+
+
+def webhook_body_refund(
+    refund_id: str,
+    payment_id: str,
+    amount: int,
+    *,
+    event: str = "refund.processed",
+    event_id: str | None = None,
+) -> tuple[bytes, dict[str, str]]:
+    """A signed Razorpay refund webhook delivery."""
+    import json
+
+    from app.modules.payments.gateway import webhook_signature
+
+    body = json.dumps(
+        {
+            "event": event,
+            "payload": {
+                "refund": {"entity": {"id": refund_id, "payment_id": payment_id, "amount": amount}}
+            },
+        }
+    ).encode()
+    return body, {
+        "X-Razorpay-Signature": webhook_signature(body),
+        "X-Razorpay-Event-Id": event_id or f"evt_{uuid.uuid4().hex[:12]}",
+        "Content-Type": "application/json",
+    }

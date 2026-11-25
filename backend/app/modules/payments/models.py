@@ -16,9 +16,11 @@ class PaymentStatus(StrEnum):
 
 class RefundStatus(StrEnum):
     NONE = "none"
-    # Money was captured but the booking can't go ahead (cancelled, or the slot was lost
-    # while payment was pending). Waiting for the refund policy / manual action.
-    PENDING_REVIEW = "pending_review"
+    NOT_ELIGIBLE = "not_eligible"  # cancelled too late under the refund policy
+    REQUESTED = "requested"  # refund job queued / sent to Razorpay, awaiting processing
+    PROCESSED = "processed"
+    FAILED = "failed"  # Razorpay refused or kept failing; needs an admin
+    PENDING_REVIEW = "pending_review"  # can't be refunded automatically; needs an admin
 
 
 def _enum(enum_cls: type[StrEnum], name: str) -> Enum:
@@ -49,6 +51,11 @@ class Payment(TimestampMixin, Base):
         _enum(RefundStatus, "refund_status"), default=RefundStatus.NONE, server_default="none"
     )
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    refund_amount_paise: Mapped[int | None] = mapped_column(Integer)
+    razorpay_refund_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    refund_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class WebhookEvent(Base):

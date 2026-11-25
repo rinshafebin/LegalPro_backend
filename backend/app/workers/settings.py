@@ -30,6 +30,8 @@ settings: SettingsDict[Any] = {
         tasks.expire_booking,
         tasks.send_booking_reminder,
         tasks.expire_stale_bookings,
+        tasks.issue_refund,
+        tasks.send_hearing_reminder,
     ],
     # Safety net: expiry jobs normally fire on time; the sweep catches any that were lost.
     "cron_jobs": [CronJob(tasks.expire_stale_bookings, cron="* * * * *", timeout=60)],

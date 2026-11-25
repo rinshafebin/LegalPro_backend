@@ -1,5 +1,6 @@
 # Local stack: `docker compose up --build`
-#   API docs   http://localhost:${API_PORT:-8000}/docs   (set API_PORT if 8000 is taken)
+#   API docs   http://localhost:${API_PORT:-8000}/docs
+#   Host ports are overridable if taken: API_PORT, DB_HOST_PORT (5433), REDIS_HOST_PORT (6380)
 #   S3 API     http://localhost:8333   (SeaweedFS; creds in docker/seaweedfs/s3.json, local only)
 #   Files UI   http://localhost:8888   (SeaweedFS filer browser)
 #   Mailpit    http://localhost:8025   (catches all outgoing email)
@@ -33,7 +34,7 @@ services:
       POSTGRES_DB: advocate
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
-    ports: ["5433:5432"]
+    ports: ["${DB_HOST_PORT:-5433}:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U app -d advocate"]
@@ -43,7 +44,7 @@ services:
 
   redis:
     image: redis:7.4.12-alpine3.22
-    ports: ["6380:6379"]
+    ports: ["${REDIS_HOST_PORT:-6380}:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

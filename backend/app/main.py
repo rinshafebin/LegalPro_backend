@@ -12,6 +12,7 @@ from app.core.redis import close_redis
 from app.modules.advocates import router as advocates
 from app.modules.auth.router import router as auth_router
 from app.modules.bookings import router as bookings
+from app.modules.cases.router import router as cases_router
 from app.modules.clients.router import router as clients_router
 from app.modules.health.router import router as health_router
 from app.modules.payments.router import router as payments_router
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(advocates.admin_router, prefix=settings.api_prefix)
     app.include_router(bookings.router, prefix=settings.api_prefix)
     app.include_router(payments_router, prefix=settings.api_prefix)
+    app.include_router(cases_router, prefix=settings.api_prefix)
     return app
 
 

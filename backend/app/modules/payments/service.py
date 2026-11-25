@@ -16,17 +16,20 @@ from app.modules.bookings import service as bookings_service
 from app.modules.bookings.models import Booking, BookingStatus
 from app.modules.bookings.service import ConfirmResult
 from app.modules.payments.gateway import (
+    PaymentGatewayError,
     get_gateway,
     verify_checkout_signature,
     verify_webhook_signature,
 )
 from app.modules.payments.models import Payment, PaymentStatus, RefundStatus, WebhookEvent
+from app.modules.payments.refunds import enqueue_refund, request_refund
 from app.modules.payments.schemas import CheckoutVerifyIn, OrderOut, PaymentOut
 from app.modules.users.models import User
 
 logger = get_logger(__name__)
 
 CAPTURE_EVENTS = frozenset({"payment.captured", "order.paid"})
+REFUND_EVENTS = frozenset({"refund.processed", "refund.failed"})
 
 
 def to_paise(amount: Decimal) -> int:
@@ -103,15 +106,19 @@ async def _capture(session: AsyncSession, payment: Payment, razorpay_payment_id:
     booking = await session.get(Booking, payment.booking_id, with_for_update=True)
     assert booking is not None  # noqa: S101 - FK
     result = await bookings_service.confirm_after_payment(session, booking)
+    refund_needed = False
     if result in (ConfirmResult.SLOT_LOST, ConfirmResult.NOT_CONFIRMABLE):
-        payment.refund_status = RefundStatus.PENDING_REVIEW
+        # The client paid but can't get the consultation: refund in full automatically.
         logger.warning(
             "payment_needs_refund",
             booking_id=str(booking.id),
             reason=result.value,
             booking_status=booking.status.value,
         )
+        refund_needed = request_refund(payment, payment.amount_paise, reason=result.value)
     await session.commit()
+    if refund_needed:
+        await enqueue_refund(payment.id)
     if result is ConfirmResult.CONFIRMED:
         await bookings_service.after_confirmed(session, booking)
     logger.info("payment_captured", booking_id=str(booking.id), result=result.value)
@@ -147,6 +154,87 @@ async def verify_checkout(
     )
 
 
+# ---------------------------------------------------------------- refunds
+
+
+async def issue_refund(session: AsyncSession, payment_id: uuid.UUID, *, final_attempt: bool) -> str:
+    """Background job body: send a requested refund to Razorpay. Safe to retry."""
+    payment = await session.get(Payment, payment_id, with_for_update=True)
+    if (
+        payment is None
+        or payment.refund_status is not RefundStatus.REQUESTED
+        or payment.razorpay_refund_id is not None
+    ):
+        await session.commit()
+        return "skipped"
+    if payment.razorpay_payment_id is None or payment.refund_amount_paise is None:
+        payment.refund_status = RefundStatus.PENDING_REVIEW
+        await session.commit()
+        logger.error("refund_needs_review", payment_id=str(payment.id), reason="missing_ids")
+        return "pending_review"
+
+    try:
+        refund_id, status = await get_gateway().refund(
+            payment_id=payment.razorpay_payment_id,
+            amount_paise=payment.refund_amount_paise,
+            notes={"booking_id": str(payment.booking_id)},
+        )
+    except PaymentGatewayError:
+        if not final_attempt:
+            await session.rollback()
+            raise  # SAQ retries with backoff
+        payment.refund_status = RefundStatus.FAILED
+        await session.commit()
+        logger.error("refund_failed", payment_id=str(payment.id))
+        return "failed"
+
+    payment.razorpay_refund_id = refund_id
+    if status == "processed":
+        payment.refund_status = RefundStatus.PROCESSED
+        payment.refunded_at = datetime.now(UTC)
+    await session.commit()
+    logger.info("refund_sent", payment_id=str(payment.id), gateway_status=status)
+    return status
+
+
+async def _process_refund_event(
+    session: AsyncSession, event_type: str, event: dict[str, Any]
+) -> str:
+    try:
+        entity = event["payload"]["refund"]["entity"]
+        refund_id = str(entity["id"])
+        payment_id = str(entity["payment_id"])
+        amount = int(entity["amount"])
+    except (KeyError, TypeError, ValueError):
+        return _reject("malformed_payload", event_type=event_type)
+
+    payment = await session.scalar(
+        select(Payment).where(Payment.razorpay_payment_id == payment_id).with_for_update()
+    )
+    if payment is None:
+        return _reject("unknown_payment", event_type=event_type, payment_id=payment_id)
+    if payment.refund_amount_paise is not None and amount != payment.refund_amount_paise:
+        return _reject(
+            "refund_amount_mismatch",
+            event_type=event_type,
+            expected=payment.refund_amount_paise,
+            received=amount,
+        )
+    if payment.razorpay_refund_id not in (None, refund_id):
+        return _reject("unknown_refund", event_type=event_type, refund_id=refund_id)
+
+    payment.razorpay_refund_id = refund_id
+    if event_type == "refund.processed":
+        if payment.refund_status is RefundStatus.PROCESSED:
+            return "already_processed"
+        payment.refund_status = RefundStatus.PROCESSED
+        payment.refunded_at = datetime.now(UTC)
+        return "refund_processed"
+    payment.refund_status = RefundStatus.FAILED
+    logger.error("refund_failed", payment_id=str(payment.id), via="webhook")
+    return "refund_failed"
+
+
 # ---------------------------------------------------------------- webhook
 
 
@@ -156,6 +244,8 @@ def _reject(reason: str, **context: Any) -> str:
 
 
 async def _process_event(session: AsyncSession, event_type: str, event: dict[str, Any]) -> str:
+    if event_type in REFUND_EVENTS:
+        return await _process_refund_event(session, event_type, event)
     if event_type not in CAPTURE_EVENTS and event_type != "payment.failed":
         return "ignored"
     try:

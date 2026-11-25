@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     booking_min_lead_minutes: int = 30
     booking_payment_timeout_minutes: int = 15
     booking_currency: str = "INR"
+    # Client cancellations at least this long before the start get a full refund; later, none.
+    cancellation_full_refund_hours: int = 24
+    # Confirmed bookings can be rescheduled until this long before the start.
+    reschedule_cutoff_hours: int = 24
 
     # --- Payments (Razorpay) ---
     razorpay_key_id: str = ""
@@ -74,6 +78,7 @@ class Settings(BaseSettings):
     s3_secret_key: SecretStr = SecretStr("")
     s3_bucket: str = "advocate-files"
     s3_presign_ttl_seconds: int = 300
+    case_document_max_mb: int = 20
 
     @field_validator("cors_origins", mode="before")
     @classmethod
