@@ -25,7 +25,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.16-alpine3.24
         env:
           POSTGRES_USER: app
           POSTGRES_PASSWORD: app
@@ -35,7 +35,7 @@ jobs:
           --health-cmd "pg_isready -U app -d advocate_test"
           --health-interval 5s --health-timeout 3s --health-retries 10
       redis:
-        image: redis:7-alpine
+        image: redis:7.4.12-alpine3.22
         ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping"

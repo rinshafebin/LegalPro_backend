@@ -23,6 +23,10 @@ class Base(DeclarativeBase):
 
 
 class TimestampMixin:
+    # Fetch server-generated timestamps via RETURNING, so reading them after a
+    # flush never triggers a lazy load (which fails under asyncio).
+    __mapper_args__ = {"eager_defaults": True}
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

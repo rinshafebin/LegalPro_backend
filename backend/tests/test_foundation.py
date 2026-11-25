@@ -3,7 +3,7 @@ from httpx import AsyncClient
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.workers.settings import heartbeat
+from app.workers.tasks import heartbeat
 
 
 async def test_liveness(client: AsyncClient) -> None:

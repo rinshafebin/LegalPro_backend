@@ -4,8 +4,11 @@ import os
 os.environ["ENVIRONMENT"] = "test"
 os.environ.setdefault("LOG_JSON", "false")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
+os.environ.setdefault("GOOGLE_CLIENT_ID", "test-google-client-id")
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from datetime import datetime
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -15,9 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.db import engine, get_session
+from app.core.email import open_message
 from app.core.redis import get_redis
 from app.main import app
 from app.models import Base
+from app.workers.queue import JobQueue, get_job_queue, set_job_queue
 
 
 def _assert_safe_test_targets() -> None:
@@ -62,10 +67,49 @@ async def redis() -> AsyncIterator[Redis]:
     await client.flushdb()
 
 
+class FakeJobQueue:
+    """Records enqueued jobs instead of sending them to Redis."""
+
+    def __init__(self) -> None:
+        self.jobs: list[tuple[str, dict[str, Any]]] = []
+
+    async def enqueue(
+        self,
+        job: str,
+        /,
+        *,
+        defer_until: datetime | None = None,
+        job_id: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.jobs.append((job, {**kwargs, "_defer_until": defer_until, "_job_id": job_id}))
+
+    async def close(self) -> None:
+        return None
+
+    def emails(self) -> list[dict[str, str]]:
+        return [open_message(kw["sealed"]) for name, kw in self.jobs if name == "send_email"]
+
+    def emails_to(self, address: str) -> list[dict[str, str]]:
+        return [m for m in self.emails() if m["to"] == address]
+
+
+@pytest.fixture(autouse=True)
+def jobs() -> Iterator[FakeJobQueue]:
+    original: JobQueue = get_job_queue()
+    fake = FakeJobQueue()
+    set_job_queue(fake)
+    yield fake
+    set_job_queue(original)
+
+
 @pytest.fixture
 async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
     async def _session_override() -> AsyncIterator[AsyncSession]:
         yield db_session
+        # Production gets a fresh session per request; expiring everything after each
+        # request keeps tests from passing because of stale identity-map state.
+        db_session.expire_all()
 
     app.dependency_overrides[get_session] = _session_override
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

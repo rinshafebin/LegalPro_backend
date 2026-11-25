@@ -1,7 +1,10 @@
 # Local stack: `docker compose up --build`
 #   API docs   http://localhost:${API_PORT:-8000}/docs   (set API_PORT if 8000 is taken)
-#   MinIO UI   http://localhost:9001  (minioadmin / minioadmin)
-#   Mailpit    http://localhost:8025  (catches all outgoing email)
+#   S3 API     http://localhost:8333   (SeaweedFS; creds in docker/seaweedfs/s3.json, local only)
+#   Files UI   http://localhost:8888   (SeaweedFS filer browser)
+#   Mailpit    http://localhost:8025   (catches all outgoing email)
+#
+# All images are pinned to exact versions. Bump them deliberately.
 
 x-app: &app
   build: .
@@ -9,10 +12,10 @@ x-app: &app
   environment:
     DATABASE_URL: postgresql+asyncpg://app:app@db:5432/advocate
     REDIS_URL: redis://redis:6379/0
-    S3_ENDPOINT_URL: http://minio:9000
-    S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
-    S3_ACCESS_KEY: minioadmin
-    S3_SECRET_KEY: minioadmin
+    S3_ENDPOINT_URL: http://seaweedfs:8333
+    S3_PUBLIC_ENDPOINT_URL: http://localhost:8333
+    S3_ACCESS_KEY: devaccess
+    S3_SECRET_KEY: devsecret-local-only
     SMTP_HOST: mailpit
     SMTP_PORT: "1025"
   depends_on:
@@ -23,7 +26,7 @@ x-app: &app
 
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:16.16-alpine3.24
     environment:
       POSTGRES_DB: advocate
       POSTGRES_USER: app
@@ -37,7 +40,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.12-alpine3.22
     ports: ["6380:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -45,35 +48,35 @@ services:
       timeout: 3s
       retries: 10
 
-  # MinIO stopped publishing community images (Oct 2025); Chainguard ships free builds.
-  minio:
-    image: cgr.dev/chainguard/minio:latest
-    command: ["server", "/data", "--console-address", ":9001"]
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports: ["9000:9000", "9001:9001"]
-    volumes: [miniodata:/data]
+  # S3-compatible storage. Replaces MinIO, whose community images are no longer published.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.55
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json"]
+    ports: ["8333:8333", "8888:8888"]
+    volumes:
+      - seaweedfsdata:/data
+      - ./docker/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8333/healthz"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 20
 
-  minio-init:
-    image: cgr.dev/chainguard/minio:latest
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.55
     depends_on:
-      minio:
+      seaweedfs:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
+    # Idempotent: succeed if the bucket was created or already exists, fail on anything else.
     command:
       - >-
-        mc alias set dev http://minio:9000 minioadmin minioadmin &&
-        mc mb --ignore-existing dev/advocate-files &&
-        mc anonymous set none dev/advocate-files
+        out=$$(echo "s3.bucket.create -name advocate-files" | weed shell -master=seaweedfs:9333 2>&1);
+        echo "$$out";
+        echo "$$out" | grep -qE "created bucket|already exists"
 
   mailpit:
-    image: axllent/mailpit:latest
+    image: axllent/mailpit:v1.34.0
     ports: ["8025:8025", "1025:1025"]
 
   migrate:
@@ -90,7 +93,7 @@ services:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
-      minio-init: { condition: service_completed_successfully }
+      seaweedfs-init: { condition: service_completed_successfully }
 
   worker:
     <<: *app
@@ -103,4 +106,4 @@ services:
 
 volumes:
   pgdata:
-  miniodata:
+  seaweedfsdata:
