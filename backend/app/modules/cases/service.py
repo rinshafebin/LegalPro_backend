@@ -13,12 +13,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.email import enqueue_email
 from app.core.errors import BadRequestError, ConflictError, ForbiddenError, NotFoundError
 from app.core.logging import get_logger
 from app.core.pagination import PageParams, paginate
 from app.core.storage import get_storage
 from app.modules.advocates.models import AdvocateProfile
+from app.modules.audit.models import AuditAction
+from app.modules.audit.service import AuditContext, record
 from app.modules.bookings.emails import format_local
 from app.modules.bookings.models import Booking, BookingStatus
 from app.modules.cases import files
@@ -40,6 +41,7 @@ from app.modules.cases.models import (
     HearingStatus,
     case_number_seq,
 )
+from app.modules.chat.service import case_room
 from app.modules.cases.schemas import (
     CaseCreateIn,
     CaseMemberAddIn,
@@ -53,6 +55,8 @@ from app.modules.cases.schemas import (
     PersonOut,
 )
 from app.modules.clients.models import ClientProfile
+from app.modules.notifications.models import NotificationType
+from app.modules.notifications.service import link, notify
 from app.modules.users.models import User
 from app.workers.queue import get_job_queue
 
@@ -68,7 +72,9 @@ def utcnow() -> datetime:
 # ---------------------------------------------------------------- cases
 
 
-async def create_case(session: AsyncSession, advocate: User, data: CaseCreateIn) -> Case:
+async def create_case(
+    session: AsyncSession, advocate: User, data: CaseCreateIn, audit: AuditContext
+) -> Case:
     """A case is opened by the advocate from one of their own consultations.
 
     Tying it to a booking means an advocate can't open cases for arbitrary clients.
@@ -86,6 +92,7 @@ async def create_case(session: AsyncSession, advocate: User, data: CaseCreateIn)
 
     number = await session.scalar(select(case_number_seq.next_value()))
     case = Case(
+        id=uuid.uuid4(),
         case_number=f"CASE-{utcnow().year}-{int(number or 0):06d}",
         title=data.title.strip(),
         description=data.description,
@@ -96,13 +103,43 @@ async def create_case(session: AsyncSession, advocate: User, data: CaseCreateIn)
         court_name=data.court_name,
     )
     session.add(case)
+    session.add(case_room(case.id))
+    record(session, audit, advocate.id, AuditAction.CASE_CREATED, case_id=case.id)
     try:
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
         raise ConflictError("A case already exists for this booking") from exc
     logger.info("case_created", case_id=str(case.id), case_number=case.case_number)
+
+    client = await session.get(User, case.client_id)
+    if client is not None:
+        await notify(
+            session,
+            client,
+            NotificationType.CASE_OPENED,
+            title=f"Case {case.case_number} opened",
+            data={"case_id": str(case.id), "case_number": case.case_number},
+            email=_case_email(case, f"Your advocate opened case {case.case_number} for you."),
+        )
     return case
+
+
+def _case_email(case: Case, line: str) -> tuple[str, str]:
+    """Case emails carry the case number and a link only, never titles or other content."""
+    return (
+        f"Update on case {case.case_number}",
+        f"{line}\n\nOpen the case: {link(f'/cases/{case.id}')}\n",
+    )
+
+
+async def view_case(
+    session: AsyncSession, user: User, case_id: uuid.UUID, audit: AuditContext
+) -> tuple[Case, CaseRole]:
+    case, role = await get_case_for(session, user, case_id)
+    record(session, audit, user.id, AuditAction.CASE_VIEWED, case_id=case.id)
+    await session.commit()
+    return case, role
 
 
 def _visible_cases(user: User) -> Select[Case]:
@@ -187,19 +224,28 @@ async def to_case_out(session: AsyncSession, case: Case, role: CaseRole) -> Case
 
 
 async def update_case(
-    session: AsyncSession, user: User, case_id: uuid.UUID, data: CaseUpdateIn
+    session: AsyncSession, user: User, case_id: uuid.UUID, data: CaseUpdateIn, audit: AuditContext
 ) -> tuple[Case, CaseRole]:
     case, role = await get_case_for(session, user, case_id, for_update=True)
     require_role(role, CaseRole.LEAD, action="edit case details")
     changes = data.model_dump(exclude_unset=True)
     if case.status is CaseStatus.CLOSED and changes.get("status") in (None, CaseStatus.CLOSED):
         require_open(case)  # a closed case only accepts being reopened
+    old_status = case.status
     for field, value in changes.items():
         if field == "title" and value is None:
             continue
         setattr(case, field, value)
-    if "status" in changes:
+    if case.status is not old_status:
         case.closed_at = utcnow() if case.status is CaseStatus.CLOSED else None
+        record(
+            session,
+            audit,
+            user.id,
+            AuditAction.CASE_STATUS_CHANGED,
+            case_id=case.id,
+            details={"from": old_status.value, "to": case.status.value},
+        )
     await session.commit()
     return case, role
 
@@ -208,7 +254,11 @@ async def update_case(
 
 
 async def add_member(
-    session: AsyncSession, user: User, case_id: uuid.UUID, data: CaseMemberAddIn
+    session: AsyncSession,
+    user: User,
+    case_id: uuid.UUID,
+    data: CaseMemberAddIn,
+    audit: AuditContext,
 ) -> tuple[Case, CaseRole]:
     case, role = await get_case_for(session, user, case_id)
     require_role(role, CaseRole.LEAD, action="manage members")
@@ -227,16 +277,41 @@ async def add_member(
     if eligible is None:
         raise BadRequestError("Members must be verified advocates")
     session.add(CaseMember(case_id=case.id, advocate_id=data.advocate_id, role=data.role))
+    record(
+        session,
+        audit,
+        user.id,
+        AuditAction.MEMBER_ADDED,
+        case_id=case.id,
+        entity_type="advocate",
+        entity_id=data.advocate_id,
+        details={"role": data.role.value},
+    )
     try:
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
         raise ConflictError("Advocate is already a member of this case") from exc
+
+    member = await session.get(User, data.advocate_id)
+    if member is not None:
+        await notify(
+            session,
+            member,
+            NotificationType.CASE_MEMBER_ADDED,
+            title=f"Added to case {case.case_number}",
+            data={"case_id": str(case.id), "case_number": case.case_number},
+            email=_case_email(case, f"You were added to case {case.case_number}."),
+        )
     return case, role
 
 
 async def remove_member(
-    session: AsyncSession, user: User, case_id: uuid.UUID, advocate_id: uuid.UUID
+    session: AsyncSession,
+    user: User,
+    case_id: uuid.UUID,
+    advocate_id: uuid.UUID,
+    audit: AuditContext,
 ) -> None:
     """The lead removes anyone; a member can remove themselves."""
     case, role = await get_case_for(session, user, case_id)
@@ -246,6 +321,15 @@ async def remove_member(
     if member is None:
         raise NotFoundError("Advocate is not a member of this case")
     await session.delete(member)
+    record(
+        session,
+        audit,
+        user.id,
+        AuditAction.MEMBER_REMOVED,
+        case_id=case.id,
+        entity_type="advocate",
+        entity_id=advocate_id,
+    )
     await session.commit()
 
 
@@ -321,6 +405,7 @@ async def upload_document(
     user: User,
     case_id: uuid.UUID,
     upload: UploadFile,
+    audit: AuditContext,
     *,
     visible_to_client: bool,
 ) -> CaseDocument:
@@ -346,6 +431,16 @@ async def upload_document(
         visible_to_client=True if role is CaseRole.CLIENT else visible_to_client,
     )
     session.add(document)
+    record(
+        session,
+        audit,
+        user.id,
+        AuditAction.DOCUMENT_UPLOADED,
+        case_id=case.id,
+        entity_type="document",
+        entity_id=doc_id,
+        details={"size_bytes": len(data), "content_type": content_type},
+    )
     try:
         await session.commit()
     except Exception:
@@ -369,9 +464,13 @@ async def _visible_document(
 
 
 async def document_download_url(
-    session: AsyncSession, user: User, case_id: uuid.UUID, document_id: uuid.UUID
+    session: AsyncSession,
+    user: User,
+    case_id: uuid.UUID,
+    document_id: uuid.UUID,
+    audit: AuditContext,
 ) -> tuple[str, int]:
-    _, _, document = await _visible_document(session, user, case_id, document_id)
+    case, _, document = await _visible_document(session, user, case_id, document_id)
     ttl = get_settings().s3_presign_ttl_seconds
     url = await get_storage().presigned_get(
         document.storage_key,
@@ -379,12 +478,25 @@ async def document_download_url(
         content_type=document.content_type,
         ttl_seconds=ttl,
     )
-    logger.info("case_document_download", document_id=str(document.id), user_id=str(user.id))
+    record(
+        session,
+        audit,
+        user.id,
+        AuditAction.DOCUMENT_DOWNLOADED,
+        case_id=case.id,
+        entity_type="document",
+        entity_id=document.id,
+    )
+    await session.commit()
     return url, ttl
 
 
 async def delete_document(
-    session: AsyncSession, user: User, case_id: uuid.UUID, document_id: uuid.UUID
+    session: AsyncSession,
+    user: User,
+    case_id: uuid.UUID,
+    document_id: uuid.UUID,
+    audit: AuditContext,
 ) -> None:
     case, role, document = await _visible_document(session, user, case_id, document_id)
     if role is not CaseRole.LEAD and document.uploaded_by_id != user.id:
@@ -392,6 +504,15 @@ async def delete_document(
     require_open(case)
     key = document.storage_key
     await session.delete(document)
+    record(
+        session,
+        audit,
+        user.id,
+        AuditAction.DOCUMENT_DELETED,
+        case_id=case.id,
+        entity_type="document",
+        entity_id=document.id,
+    )
     await session.commit()
     await get_storage().delete(key)
 
@@ -498,14 +619,26 @@ async def send_hearing_reminder(
     users = (await session.scalars(select(User).where(User.id.in_(user_ids)))).all()
     lead = await session.get(AdvocateProfile, case.lead_advocate_id)
     when = format_local(hearing.scheduled_at, lead.timezone if lead else "Asia/Kolkata")
+    # Case number, time and link only: no title, court, purpose or notes in the email.
     subject = f"Reminder: hearing in {kind} ({case.case_number})"
     body = (
-        f"Case {case.case_number}: {case.title}\n"
-        f"Hearing: {when}\n"
-        f"Court: {hearing.court or 'TBD'}\n"
-        f"Purpose: {hearing.purpose or '-'}\n"
+        f"A hearing in case {case.case_number} is scheduled for {when}.\n\n"
+        f"Open the case for details: {link(f'/cases/{case.id}')}\n"
     )
+    sent = 0
     for u in users:
-        if u.is_active:
-            await enqueue_email(u.email, subject, body)
-    return len(users)
+        if await notify(
+            session,
+            u,
+            NotificationType.HEARING_REMINDER,
+            title=subject,
+            data={
+                "case_id": str(case.id),
+                "case_number": case.case_number,
+                "hearing_id": str(hearing.id),
+                "scheduled_at": hearing.scheduled_at.isoformat(),
+            },
+            email=(subject, body),
+        ):
+            sent += 1
+    return sent

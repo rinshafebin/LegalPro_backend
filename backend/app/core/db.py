@@ -1,6 +1,7 @@
 """Async SQLAlchemy engine, session factory and declarative base."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 
 from sqlalchemy import DateTime, MetaData, func
@@ -54,3 +55,14 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+
+
+SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+
+
+def get_session_factory() -> SessionFactory:
+    """For long-lived handlers (WebSockets) that open a short session per message.
+
+    A dependency, so tests can point it at their rolled-back transaction.
+    """
+    return SessionLocal

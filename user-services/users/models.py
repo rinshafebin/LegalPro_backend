@@ -1,4 +1,3 @@
-# users/models.py
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.utils import timezone
@@ -13,11 +12,17 @@ class UserManager(BaseUserManager):
             raise ValueError("Email must be provided")
         email = self.normalize_email(email)
         user = self.model(email=email, role=role, **extra_fields)
-        user.set_password(password)
+        if password:
+            user.set_password(password)
+        else:
+            # create unusable password if none provided
+            user.set_unusable_password()
         user.save(using=self._db)
         return user
 
     def create_superuser(self, email, password=None, **extra_fields):
+        if not password:
+            raise ValueError("Superuser must have a password")
         extra_fields.setdefault("role", "admin")
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
@@ -122,7 +127,11 @@ class AdvocateProfile(models.Model):
     class Meta:
         db_table = "advocate_profile"
         ordering = ["full_name"]
-        indexes = [models.Index(fields=["user"]), models.Index(fields=["bar_council_id"]), models.Index(fields=["full_name"])]
+        indexes = [
+            models.Index(fields=["user"]),
+            models.Index(fields=["bar_council_id"]),
+            models.Index(fields=["full_name"]),
+        ]
 
 
 class OTP(models.Model):
@@ -136,9 +145,16 @@ class OTP(models.Model):
 
     def mark_used(self):
         self.is_used = True
-        self.save()
+        self.save(update_fields=["is_used"])
+
+    def __str__(self):
+        return f"{self.user.email} - {self.code}"
 
     class Meta:
         db_table = "otp"
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["user"]), models.Index(fields=["code"])]
+        indexes = [
+            models.Index(fields=["user"]),
+            models.Index(fields=["code"]),
+            models.Index(fields=["is_used"]),
+        ]

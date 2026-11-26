@@ -80,6 +80,17 @@ class Settings(BaseSettings):
     s3_presign_ttl_seconds: int = 300
     case_document_max_mb: int = 20
 
+    # --- Realtime / chat ---
+    ws_ticket_ttl_seconds: int = 30
+    # Browsers always send Origin; it must be in CORS_ORIGINS. Non-browser clients that send
+    # no Origin are refused unless this is true.
+    ws_allow_missing_origin: bool = False
+    chat_rate_limit_messages: int = 20
+    chat_rate_limit_window_seconds: int = 10
+    chat_attachment_max_mb: int = 20
+    # At most one "new message" notification (and email) per room per recipient per window.
+    chat_notify_throttle_minutes: int = 10
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:
@@ -136,6 +147,8 @@ class Settings(BaseSettings):
                 raise ValueError("FIELD_ENCRYPTION_KEY must differ from SECRET_KEY/JWT_SECRET_KEY")
             if len(keys) != len(self.field_encryption_key):
                 raise ValueError("FIELD_ENCRYPTION_KEY contains duplicate keys")
+            if self.ws_allow_missing_origin:
+                raise ValueError("WS_ALLOW_MISSING_ORIGIN must be false in production")
         return self
 
     @property

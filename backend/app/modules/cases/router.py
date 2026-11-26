@@ -5,9 +5,10 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 
 from app.core.deps import SessionDep
 from app.core.pagination import Page, PageDep, make_page
+from app.modules.audit.service import AuditDep
 from app.modules.auth.deps import require_roles
 from app.modules.cases import service
-from app.modules.cases.access import CaseRole, get_case_for
+from app.modules.cases.access import CaseRole
 from app.modules.cases.models import CaseStatus
 from app.modules.cases.schemas import (
     CaseCreateIn,
@@ -39,8 +40,10 @@ router = APIRouter(prefix="/cases", tags=["cases"])
     description="Opened by the advocate from one of their confirmed/completed bookings; "
     "the client is taken from that booking.",
 )
-async def create_case(data: CaseCreateIn, user: AdvocateUser, session: SessionDep) -> CaseOut:
-    case = await service.create_case(session, user, data)
+async def create_case(
+    data: CaseCreateIn, user: AdvocateUser, session: SessionDep, audit: AuditDep
+) -> CaseOut:
+    case = await service.create_case(session, user, data, audit)
     return await service.to_case_out(session, case, CaseRole.LEAD)
 
 
@@ -55,17 +58,19 @@ async def list_cases(
     return make_page(rows, total, page)
 
 
-@router.get("/{case_id}", response_model=CaseOut)
-async def get_case(case_id: uuid.UUID, user: CaseUser, session: SessionDep) -> CaseOut:
-    case, role = await get_case_for(session, user, case_id)
+@router.get("/{case_id}", response_model=CaseOut, description="Audited (case.viewed).")
+async def get_case(
+    case_id: uuid.UUID, user: CaseUser, session: SessionDep, audit: AuditDep
+) -> CaseOut:
+    case, role = await service.view_case(session, user, case_id, audit)
     return await service.to_case_out(session, case, role)
 
 
 @router.patch("/{case_id}", response_model=CaseOut, description="Lead advocate only.")
 async def update_case(
-    case_id: uuid.UUID, data: CaseUpdateIn, user: CaseUser, session: SessionDep
+    case_id: uuid.UUID, data: CaseUpdateIn, user: CaseUser, session: SessionDep, audit: AuditDep
 ) -> CaseOut:
-    case, role = await service.update_case(session, user, case_id, data)
+    case, role = await service.update_case(session, user, case_id, data, audit)
     return await service.to_case_out(session, case, role)
 
 
@@ -74,17 +79,25 @@ async def update_case(
 
 @router.post("/{case_id}/members", response_model=CaseOut, status_code=status.HTTP_201_CREATED)
 async def add_member(
-    case_id: uuid.UUID, data: CaseMemberAddIn, user: CaseUser, session: SessionDep
+    case_id: uuid.UUID,
+    data: CaseMemberAddIn,
+    user: CaseUser,
+    session: SessionDep,
+    audit: AuditDep,
 ) -> CaseOut:
-    case, role = await service.add_member(session, user, case_id, data)
+    case, role = await service.add_member(session, user, case_id, data, audit)
     return await service.to_case_out(session, case, role)
 
 
 @router.delete("/{case_id}/members/{advocate_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_member(
-    case_id: uuid.UUID, advocate_id: uuid.UUID, user: CaseUser, session: SessionDep
+    case_id: uuid.UUID,
+    advocate_id: uuid.UUID,
+    user: CaseUser,
+    session: SessionDep,
+    audit: AuditDep,
 ) -> None:
-    await service.remove_member(session, user, case_id, advocate_id)
+    await service.remove_member(session, user, case_id, advocate_id, audit)
 
 
 # ---------------------------------------------------------------- notes
@@ -139,28 +152,37 @@ async def upload_document(
     case_id: uuid.UUID,
     user: CaseUser,
     session: SessionDep,
+    audit: AuditDep,
     file: Annotated[UploadFile, File()],
     visible_to_client: Annotated[bool, Form()] = True,
 ) -> DocumentOut:
     document = await service.upload_document(
-        session, user, case_id, file, visible_to_client=visible_to_client
+        session, user, case_id, file, audit, visible_to_client=visible_to_client
     )
     return DocumentOut.model_validate(document)
 
 
 @router.get("/{case_id}/documents/{document_id}/download", response_model=DownloadOut)
 async def download_document(
-    case_id: uuid.UUID, document_id: uuid.UUID, user: CaseUser, session: SessionDep
+    case_id: uuid.UUID,
+    document_id: uuid.UUID,
+    user: CaseUser,
+    session: SessionDep,
+    audit: AuditDep,
 ) -> DownloadOut:
-    url, ttl = await service.document_download_url(session, user, case_id, document_id)
+    url, ttl = await service.document_download_url(session, user, case_id, document_id, audit)
     return DownloadOut(url=url, expires_in=ttl)
 
 
 @router.delete("/{case_id}/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
-    case_id: uuid.UUID, document_id: uuid.UUID, user: CaseUser, session: SessionDep
+    case_id: uuid.UUID,
+    document_id: uuid.UUID,
+    user: CaseUser,
+    session: SessionDep,
+    audit: AuditDep,
 ) -> None:
-    await service.delete_document(session, user, case_id, document_id)
+    await service.delete_document(session, user, case_id, document_id, audit)
 
 
 # ---------------------------------------------------------------- hearings

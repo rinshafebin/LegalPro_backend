@@ -9,7 +9,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.email import enqueue_email
 from app.core.errors import BadRequestError, ConflictError, ForbiddenError, NotFoundError
 from app.core.logging import get_logger
 from app.core.pagination import PageParams, paginate
@@ -18,7 +17,10 @@ from app.modules.bookings import emails
 from app.modules.bookings.models import ACTIVE_STATUSES, AvailabilityRule, Booking, BookingStatus
 from app.modules.bookings.schemas import AvailabilityIn, BookingCreateIn, BookingOut, PartyOut
 from app.modules.bookings.slots import Slot, free_slots, generate_slots, rules_overlap
+from app.modules.chat.service import ensure_booking_room
 from app.modules.clients.models import ClientProfile
+from app.modules.notifications.models import NotificationType
+from app.modules.notifications.service import notify
 from app.modules.payments.models import Payment, PaymentStatus
 from app.modules.payments.refunds import (
     Canceller,
@@ -240,10 +242,10 @@ async def create_booking(session: AsyncSession, client: User, data: BookingCreat
 
 @dataclass(frozen=True)
 class _Parties:
+    client: User
     client_name: str
-    client_email: str
+    advocate: User
     advocate_name: str
-    advocate_email: str
     timezone: str
 
 
@@ -255,12 +257,41 @@ async def _parties(session: AsyncSession, booking: Booking) -> _Parties:
     if client is None or advocate is None or advocate_profile is None:  # FKs make this impossible
         raise RuntimeError(f"Booking {booking.id} references missing users")
     return _Parties(
+        client=client,
         client_name=client_profile.full_name if client_profile else client.email,
-        client_email=client.email,
+        advocate=advocate,
         advocate_name=advocate_profile.full_name,
-        advocate_email=advocate.email,
         timezone=advocate_profile.timezone,
     )
+
+
+async def _tell(
+    session: AsyncSession,
+    user: User,
+    type_: NotificationType,
+    booking: Booking,
+    email: tuple[str, str],
+) -> None:
+    await notify(
+        session,
+        user,
+        type_,
+        title=email[0],
+        data={"booking_id": str(booking.id), "start_at": booking.start_at.isoformat()},
+        email=email,
+    )
+
+
+async def _tell_both(
+    session: AsyncSession,
+    p: _Parties,
+    type_: NotificationType,
+    booking: Booking,
+    for_client: tuple[str, str],
+    for_advocate: tuple[str, str],
+) -> None:
+    await _tell(session, p.client, type_, booking, for_client)
+    await _tell(session, p.advocate, type_, booking, for_advocate)
 
 
 async def _schedule_reminders(booking: Booking) -> None:
@@ -287,10 +318,17 @@ async def after_confirmed(session: AsyncSession, booking: Booking) -> None:
     """Side effects once a booking is confirmed (after commit)."""
     await get_job_queue().abort(expire_job_id(booking.id))
     await _schedule_reminders(booking)
+    await ensure_booking_room(session, booking.id)
     p = await _parties(session, booking)
     when = emails.format_local(booking.start_at, p.timezone)
-    await enqueue_email(p.client_email, *emails.confirmed(p.client_name, p.advocate_name, when))
-    await enqueue_email(p.advocate_email, *emails.confirmed(p.advocate_name, p.client_name, when))
+    await _tell_both(
+        session,
+        p,
+        NotificationType.BOOKING_CONFIRMED,
+        booking,
+        emails.confirmed(p.client_name, p.advocate_name, when),
+        emails.confirmed(p.advocate_name, p.client_name, when),
+    )
 
 
 class ConfirmResult(StrEnum):
@@ -463,11 +501,15 @@ async def cancel_booking(
         p = await _parties(session, booking)
         when = emails.format_local(booking.start_at, p.timezone)
         if user.id == booking.client_id:
-            recipient = (p.advocate_email, p.advocate_name, p.client_name)
+            recipient, name, other = p.advocate, p.advocate_name, p.client_name
         else:
-            recipient = (p.client_email, p.client_name, p.advocate_name)
-        await enqueue_email(
-            recipient[0], *emails.cancelled(recipient[1], recipient[2], when, reason)
+            recipient, name, other = p.client, p.client_name, p.advocate_name
+        await _tell(
+            session,
+            recipient,
+            NotificationType.BOOKING_CANCELLED,
+            booking,
+            emails.cancelled(name, other, when, reason),
         )
     return booking
 
@@ -500,8 +542,14 @@ async def reschedule_booking(
     await _schedule_reminders(booking)
     p = await _parties(session, booking)
     when = emails.format_local(booking.start_at, p.timezone)
-    await enqueue_email(p.client_email, *emails.rescheduled(p.client_name, p.advocate_name, when))
-    await enqueue_email(p.advocate_email, *emails.rescheduled(p.advocate_name, p.client_name, when))
+    await _tell_both(
+        session,
+        p,
+        NotificationType.BOOKING_RESCHEDULED,
+        booking,
+        emails.rescheduled(p.client_name, p.advocate_name, when),
+        emails.rescheduled(p.advocate_name, p.client_name, when),
+    )
     return booking
 
 
@@ -535,10 +583,12 @@ async def send_reminder(
         return False
     p = await _parties(session, booking)
     when = emails.format_local(booking.start_at, p.timezone)
-    await enqueue_email(
-        p.client_email, *emails.reminder(p.client_name, p.advocate_name, when, kind)
-    )
-    await enqueue_email(
-        p.advocate_email, *emails.reminder(p.advocate_name, p.client_name, when, kind)
+    await _tell_both(
+        session,
+        p,
+        NotificationType.BOOKING_REMINDER,
+        booking,
+        emails.reminder(p.client_name, p.advocate_name, when, kind),
+        emails.reminder(p.advocate_name, p.client_name, when, kind),
     )
     return True

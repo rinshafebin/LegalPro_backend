@@ -1,7 +1,9 @@
-# users/tasks.py
 from celery import shared_task
 from django.core.mail import send_mail
 from django.conf import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 @shared_task
 def send_welcome_email_task(email, full_name):
@@ -14,4 +16,4 @@ def send_welcome_email_task(email, full_name):
             fail_silently=False,
         )
     except Exception as e:
-        print(f"Failed to send welcome email: {e}")
+        logger.exception("Failed to send welcome email to %s: %s", email, e)
