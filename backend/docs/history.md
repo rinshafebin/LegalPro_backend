@@ -1,3 +1,10 @@
+> **Historical document.** Written on 2026-11-25, before the rebuild, as the plan for
+> replacing the five Django microservices with the FastAPI app in `backend/`. The old
+> services were removed on 2026-11-26 (local git tag `pre-cleanup` has the last version
+> that contains them). It describes the old code and the plan, not the current system:
+> see [`backend/README.md`](../README.md) for that. What happened to each old feature is
+> in [`legacy-parity.md`](legacy-parity.md).
+
 # Legal Platform Backend — Analysis & Completion Guide
 
 > Platform: clients find advocates, book consultations, and track cases; advocates manage teams, cases and chat.
