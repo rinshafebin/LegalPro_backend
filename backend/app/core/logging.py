@@ -1,6 +1,7 @@
 """Structured logging (structlog) for app code and stdlib/uvicorn loggers."""
 
 import logging
+import re
 import sys
 import uuid
 from typing import Any
@@ -9,6 +10,18 @@ import structlog
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import get_settings
+
+_TICKET = re.compile(r"(ticket=)[^\s\"&]+")
+
+
+def redact_secrets(
+    _logger: Any, _method: str, event_dict: structlog.types.EventDict
+) -> structlog.types.EventDict:
+    """Uvicorn logs WebSocket URLs with their query string; hide the (single-use) ticket."""
+    event = event_dict.get("event")
+    if isinstance(event, str) and "ticket=" in event:
+        event_dict["event"] = _TICKET.sub(r"\1[redacted]", event)
+    return event_dict
 
 
 def configure_logging() -> None:
@@ -19,6 +32,7 @@ def configure_logging() -> None:
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
+        redact_secrets,
     ]
     renderer: structlog.types.Processor = (
         structlog.processors.JSONRenderer()

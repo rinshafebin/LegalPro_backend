@@ -10,12 +10,17 @@ from app.core.errors import ERROR_RESPONSE_SCHEMA, register_exception_handlers
 from app.core.logging import RequestIdMiddleware, configure_logging, get_logger
 from app.core.redis import close_redis
 from app.modules.advocates import router as advocates
+from app.modules.audit.router import router as audit_router
 from app.modules.auth.router import router as auth_router
 from app.modules.bookings import router as bookings
 from app.modules.cases.router import router as cases_router
+from app.modules.chat.router import router as chat_router
 from app.modules.clients.router import router as clients_router
 from app.modules.health.router import router as health_router
-from app.modules.payments.router import router as payments_router
+from app.modules.notifications.router import router as notifications_router
+from app.modules.payments import router as payments
+from app.modules.realtime.hub import hub
+from app.modules.realtime.router import router as realtime_router
 from app.modules.users.router import router as users_router
 from app.workers.queue import get_job_queue
 
@@ -26,6 +31,7 @@ logger = get_logger(__name__)
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("startup", environment=get_settings().environment)
     yield
+    await hub.close()
     await get_job_queue().close()
     await close_redis()
     await engine.dispose()
@@ -73,8 +79,13 @@ def create_app() -> FastAPI:
     app.include_router(advocates.teams_router, prefix=settings.api_prefix)
     app.include_router(advocates.admin_router, prefix=settings.api_prefix)
     app.include_router(bookings.router, prefix=settings.api_prefix)
-    app.include_router(payments_router, prefix=settings.api_prefix)
+    app.include_router(payments.router, prefix=settings.api_prefix)
+    app.include_router(payments.admin_router, prefix=settings.api_prefix)
     app.include_router(cases_router, prefix=settings.api_prefix)
+    app.include_router(chat_router, prefix=settings.api_prefix)
+    app.include_router(notifications_router, prefix=settings.api_prefix)
+    app.include_router(audit_router, prefix=settings.api_prefix)
+    app.include_router(realtime_router, prefix=settings.api_prefix)
     return app
 
 

@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.core.redis import get_redis
 from app.core.security import TokenPayload, TokenType, create_token
 from app.modules.auth.schemas import TokenPair
+from app.modules.realtime.pubsub import kick_user
 from app.modules.users.models import User
 
 _REFRESH = "auth:refresh:{jti}"
@@ -83,6 +84,7 @@ async def revoke_all_sessions(user_id: uuid.UUID) -> None:
     jtis = await cast(Awaitable[set[str]], redis.smembers(sessions_key))
     keys = [_REFRESH.format(jti=jti) for jti in jtis]
     await redis.delete(sessions_key, *keys)
+    await kick_user(user_id)  # close open WebSockets on every API process
 
 
 # ---------------------------------------------------------------- MFA challenge

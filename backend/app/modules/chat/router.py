@@ -26,7 +26,9 @@ ChatUser = Annotated[User, Depends(require_roles(UserRole.CLIENT, UserRole.ADVOC
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-@router.get("/rooms", response_model=Page[RoomOut], summary="Rooms I can use, newest activity first")
+@router.get(
+    "/rooms", response_model=Page[RoomOut], summary="Rooms I can use, newest activity first"
+)
 async def list_rooms(user: ChatUser, session: SessionDep, page: PageDep) -> Page[RoomOut]:
     rows, total = await service.list_rooms(session, user, page)
     return make_page(rows, total, page)

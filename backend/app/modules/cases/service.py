@@ -41,7 +41,6 @@ from app.modules.cases.models import (
     HearingStatus,
     case_number_seq,
 )
-from app.modules.chat.service import case_room
 from app.modules.cases.schemas import (
     CaseCreateIn,
     CaseMemberAddIn,
@@ -54,6 +53,7 @@ from app.modules.cases.schemas import (
     NoteIn,
     PersonOut,
 )
+from app.modules.chat.service import case_room
 from app.modules.clients.models import ClientProfile
 from app.modules.notifications.models import NotificationType
 from app.modules.notifications.service import link, notify
@@ -103,9 +103,10 @@ async def create_case(
         court_name=data.court_name,
     )
     session.add(case)
-    session.add(case_room(case.id))
-    record(session, audit, advocate.id, AuditAction.CASE_CREATED, case_id=case.id)
     try:
+        await session.flush()  # the case row first: the room and audit rows reference it
+        session.add(case_room(case.id))
+        record(session, audit, advocate.id, AuditAction.CASE_CREATED, case_id=case.id)
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()

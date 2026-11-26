@@ -20,7 +20,7 @@ import time
 import uuid
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from app.core.config import get_settings

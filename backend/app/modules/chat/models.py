@@ -73,7 +73,9 @@ class ChatMessage(Base):
     __table_args__ = (
         Index("ix_chat_messages_room_seq", "room_id", "seq"),
         # Lets a client safely resend after a dropped connection: same id, same message.
-        UniqueConstraint("room_id", "sender_id", "client_msg_id", name="uq_chat_messages_client_msg"),
+        UniqueConstraint(
+            "room_id", "sender_id", "client_msg_id", name="uq_chat_messages_client_msg"
+        ),
         CheckConstraint(
             "body IS NOT NULL OR attachment_key IS NOT NULL", name="body_or_attachment"
         ),

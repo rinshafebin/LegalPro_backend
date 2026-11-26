@@ -10,6 +10,7 @@ import asyncio
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.db import engine, get_session
+from app.core.db import engine, get_session, get_session_factory
 from app.core.email import open_message
 from app.core.redis import get_redis
 from app.core.storage import set_storage
@@ -212,3 +213,20 @@ async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def ws_client(client: AsyncClient, db_session: AsyncSession) -> AsyncClient:
+    """`client`, with WebSocket handlers also running inside the test's transaction.
+
+    Open sockets with `tests.chat_support.connect` (each gets its own WS transport, entered
+    and exited inside the test task as anyio requires).
+    """
+
+    @asynccontextmanager
+    async def _factory() -> AsyncIterator[AsyncSession]:
+        yield db_session
+        db_session.expire_all()
+
+    app.dependency_overrides[get_session_factory] = lambda: _factory
+    return client

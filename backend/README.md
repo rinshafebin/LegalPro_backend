@@ -212,8 +212,134 @@ issued, so a retry can never over-refund. Statuses that need an admin: `failed`,
   - Objects are private. Downloads use `attachment` presigned URLs signed for
     `S3_PUBLIC_ENDPOINT_URL`.
   - Advocates choose `visible_to_client`. Anything a client uploads is always visible to them.
+- **Emails about cases** carry the case number, the time (for hearings) and a link. They never
+  include titles, courts, purposes, notes or document names.
+
+## Audit log (admins)
+
+- `GET /api/v1/admin/audit-logs`: filter by `case_id`, `actor_id`, `action`, `since`, `until`.
+  Newest first. Admins only.
+- **What's recorded:** case created, viewed and status changed; members added and removed;
+  documents uploaded, downloaded and deleted; refund retries and refunds marked handled.
+- **Each entry holds:** actor, action, case, target id, IP and request id. It never holds case
+  content.
+- **Append-only:** a Postgres trigger rejects UPDATE, DELETE and TRUNCATE on `audit_logs`.
+- **IP source:** the same as rate limiting, so `X-Forwarded-For` counts only when it comes from
+  `FORWARDED_ALLOW_IPS`.
+- **Atomic:** each entry commits in the same transaction as the change it describes.
+
+## Refunds needing an admin
+
+- `GET /api/v1/admin/refunds`: refunds in `failed` or `pending_review`, oldest first.
+- `POST /admin/refunds/{payment_id}/retry`: queues a fresh refund attempt with Razorpay.
+- `POST /admin/refunds/{payment_id}/mark-handled` with `{"note": "..."}`: sets the refund to
+  `resolved` for refunds handled outside the system. A late webhook won't reopen it.
+- **Admin alerts:** every active admin gets an in-app notification and an email when a refund
+  fails for the last time, needs review, or a `refund.failed` webhook arrives. The email has
+  the payment id and a link, and no client details.
+
+## Chat and realtime
+
+**Connecting:**
+
+1. `POST /api/v1/realtime/ticket` with the Bearer token returns `{ticket, expires_in}`.
+   - The ticket is single-use and valid for `WS_TICKET_TTL_SECONDS` (30 s by default).
+   - Only its hash is stored, in Redis.
+   - It's redacted from logs.
+2. Connect to `ws(s)://<host>/api/v1/ws?ticket=...`.
+   - The `Origin` must be in `CORS_ORIGINS`.
+   - A connection with no `Origin` is refused unless `WS_ALLOW_MISSING_ORIGIN=true`. That
+     setting is forbidden in production.
+   - A JWT never goes in the URL.
+
+**Frames:**
+
+- **Client to server:**
+  - `{"type":"chat.send","ref","room_id","body","client_msg_id?"}`
+  - `{"type":"chat.read","ref","room_id","seq"}`
+  - `{"type":"ping"}`
+- **Server to client:** `ready`, `ack` (echoes `ref`), `error` (`code`, `message`, `ref`),
+  `chat.message`, `chat.read`, `notification`, `pong`.
+- **Close codes:**
+  - `4401`: the session was revoked (logout everywhere, password change or deactivation).
+  - `1009`: the frame was too big.
+  - `1008`: a policy violation, such as frame flooding.
+
+**Rooms:**
+
+- One room per case is created with the case. One room per booking is created when the
+  booking is confirmed (on payment or immediately if free).
+- Existing data was backfilled by the migration.
+
+**Access:**
+
+- There's no participant table. `app/modules/chat/access.py` derives access from the case
+  (`visible_to`) or the booking (client or advocate, while it's confirmed or completed).
+- Access is re-checked on every message, every read receipt and every REST call.
+- Recipients for each message are computed from the database when it's sent.
+- So a removed member or a cancelled booking loses access on the next message. A closed case
+  keeps its history readable but takes no new messages.
+- Every frame also re-checks that the account is active and the token version unchanged.
+
+**Messages:**
+
+- **Sender:** always the authenticated user.
+- **Limits:**
+  - Bodies are 1–4000 characters, enforced in the API and by a DB CHECK.
+  - Each user can send `CHAT_RATE_LIMIT_MESSAGES` messages per
+    `CHAT_RATE_LIMIT_WINDOW_SECONDS`, across REST and WebSocket.
+- **Resends:** resending the same `client_msg_id` returns the original message; it isn't
+  stored twice.
+- **History:**
+  - `GET /chat/rooms/{id}/messages?before=<seq>` pages back through history.
+  - `?after=<seq>` catches up after a reconnect.
+  - `seq` is a global identity column.
+- **Read state:**
+  - `POST /chat/rooms/{id}/read` moves the read marker forward only, never past the newest
+    message.
+  - Unread counts appear in `GET /chat/rooms` and `GET /chat/unread`.
+  - `GET /chat/rooms/{id}` returns each participant's `last_read_seq`.
+- **Attachments:** `POST /chat/rooms/{id}/attachments` uses the case document validation
+  (type from content, `CHAT_ATTACHMENT_MAX_MB`, private objects, presigned download).
+
+**Fan-out:**
+
+- After commit, each event is published once per recipient to the Redis channel
+  `rt:user:<id>`.
+- Each API process subscribes only to the users connected to it, so every socket gets each
+  event exactly once, whichever worker it's on.
+- Each socket has a bounded outbound queue. A client that can't keep up is disconnected
+  (`4408`) and catches up via `after=`.
+- To try it with two workers:
+  `docker compose -f docker-compose.yml -f docker/compose.two-workers.yml up -d`.
+- If Redis is down, messages are still saved, and clients pick them up over REST.
+
+## Notifications
+
+- `notify(session, user, type, title=..., data=..., email=(subject, body))` in
+  `app/modules/notifications/service.py` is the only way to notify someone. It:
+  - stores the notification in-app
+  - pushes it over the WebSocket
+  - queues the email through the sealed (encrypted) email queue
+- **Endpoints:**
+  - `GET /api/v1/notifications` (`?unread=true`), `GET /notifications/unread-count`
+  - `POST /notifications/{id}/read`, `POST /notifications/read-all`
+- **Email opt-out:** `GET/PUT /notifications/preferences` turns email on or off per type.
+  In-app notifications always stay on.
+- **Types:**
+  - Bookings: confirmed, cancelled, rescheduled, reminder
+  - Cases: case opened, member added, hearing reminder
+  - Chat: new messages. At most one per room per recipient per
+    `CHAT_NOTIFY_THROTTLE_MINUTES`, and it never contains the message text.
+  - Refunds: `refund.attention`, for admins only.
 
 ## Testing notes
 
 The test suite builds its schema by running the Alembic migrations, not `create_all`. This
 catches migration drift that `alembic check` can't see, such as CHECK constraints on enums.
+
+WebSocket tests use `httpx-ws` (`ASGIWebSocketTransport`), which runs in the same event loop
+as the rest of the suite. Use `tests.chat_support.connect()` to open sockets. It gives each
+socket its own transport, opened and closed inside the test task as anyio requires. The
+`ws_client` fixture points the WebSocket handler's per-message sessions at the test
+transaction.

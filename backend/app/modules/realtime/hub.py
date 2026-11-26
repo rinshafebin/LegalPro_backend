@@ -136,7 +136,7 @@ class Hub:
             self._reader = None
         if self._pubsub is not None:
             with contextlib.suppress(Exception):
-                await self._pubsub.aclose()
+                await self._pubsub.aclose()  # type: ignore[no-untyped-call]
             self._pubsub = None
         self._local.clear()
 

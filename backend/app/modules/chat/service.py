@@ -139,7 +139,9 @@ async def _titles(
     return out
 
 
-def _room_out(room: ChatRoom, unread: int, last_read: int, title: tuple[str, str | None]) -> RoomOut:
+def _room_out(
+    room: ChatRoom, unread: int, last_read: int, title: tuple[str, str | None]
+) -> RoomOut:
     return RoomOut(
         id=room.id,
         kind=room.kind,
@@ -430,7 +432,9 @@ async def _upsert_read(
         stmt.on_conflict_do_update(
             index_elements=[ChatReadState.room_id, ChatReadState.user_id],
             set_={
-                "last_read_seq": func.greatest(ChatReadState.last_read_seq, stmt.excluded.last_read_seq),
+                "last_read_seq": func.greatest(
+                    ChatReadState.last_read_seq, stmt.excluded.last_read_seq
+                ),
                 "updated_at": func.now(),
             },
         ).returning(ChatReadState.last_read_seq)
@@ -501,4 +505,3 @@ async def _room_label(session: AsyncSession, room: ChatRoom) -> tuple[str, str]:
         number = await session.scalar(select(Case.case_number).where(Case.id == room.case_id))
         return f"case {number}", f"/chat/{room.id}"
     return "your consultation chat", f"/chat/{room.id}"
-

@@ -14,8 +14,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.modules.notifications.models import NotificationType
+from app.modules.notifications.service import active_admins, link, notify_many
 from app.modules.payments.models import Payment, PaymentStatus, RefundStatus
 from app.workers.queue import get_job_queue
 
@@ -67,4 +71,31 @@ def request_refund(payment: Payment, amount_paise: int, reason: str) -> bool:
 async def enqueue_refund(payment_id: uuid.UUID) -> None:
     await get_job_queue().enqueue(
         "issue_refund", job_id=refund_job_id(payment_id), payment_id=str(payment_id)
+    )
+
+
+async def enqueue_refund_retry(payment_id: uuid.UUID, requested_at: datetime) -> None:
+    """Admin retry: a fresh job id, so a lingering earlier job can never block it."""
+    await get_job_queue().enqueue(
+        "issue_refund",
+        job_id=f"{refund_job_id(payment_id)}:retry:{int(requested_at.timestamp())}",
+        payment_id=str(payment_id),
+    )
+
+
+async def alert_admins(session: AsyncSession, payment_id: uuid.UUID, status: RefundStatus) -> None:
+    """Tell every active admin (in-app + email) that a refund needs a person."""
+    subject = "Refund needs attention"
+    body = (
+        f"A refund could not be completed automatically (status: {status.value}).\n"
+        f"Payment: {payment_id}\n\n"
+        f"Review it: {link('/admin/refunds')}\n"
+    )
+    await notify_many(
+        session,
+        await active_admins(session),
+        NotificationType.REFUND_ATTENTION,
+        title=subject,
+        data={"payment_id": str(payment_id), "refund_status": status.value},
+        email=(subject, body),
     )

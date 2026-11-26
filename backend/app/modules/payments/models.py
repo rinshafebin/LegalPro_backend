@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Uuid, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, TimestampMixin
@@ -21,6 +21,7 @@ class RefundStatus(StrEnum):
     PROCESSED = "processed"
     FAILED = "failed"  # Razorpay refused or kept failing; needs an admin
     PENDING_REVIEW = "pending_review"  # can't be refunded automatically; needs an admin
+    RESOLVED = "resolved"  # an admin handled it outside the system (see resolution note)
 
 
 def _enum(enum_cls: type[StrEnum], name: str) -> Enum:
@@ -56,6 +57,11 @@ class Payment(TimestampMixin, Base):
     razorpay_refund_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     refund_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refund_resolved_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT")
+    )
+    refund_resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refund_resolution_note: Mapped[str | None] = mapped_column(Text)
 
 
 class WebhookEvent(Base):

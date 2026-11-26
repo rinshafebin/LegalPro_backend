@@ -42,7 +42,11 @@ class Notification(Base):
     title: Mapped[str] = mapped_column(String(200))
     data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # clock_timestamp(), not now(): several notifications made in one transaction still sort
+    # in the order they were created.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp()
+    )
 
     __mapper_args__ = {"eager_defaults": True}
 

@@ -22,7 +22,7 @@ from app.modules.payments.gateway import (
     verify_webhook_signature,
 )
 from app.modules.payments.models import Payment, PaymentStatus, RefundStatus, WebhookEvent
-from app.modules.payments.refunds import enqueue_refund, request_refund
+from app.modules.payments.refunds import alert_admins, enqueue_refund, request_refund
 from app.modules.payments.schemas import CheckoutVerifyIn, OrderOut, PaymentOut
 from app.modules.users.models import User
 
@@ -144,8 +144,13 @@ async def verify_checkout(
         raise BadRequestError("Invalid payment signature", code="invalid_signature")
 
     await _capture(session, payment, data.razorpay_payment_id)
+    return await payment_out(session, payment)
+
+
+async def payment_out(session: AsyncSession, payment: Payment) -> PaymentOut:
     booking = await session.get(Booking, payment.booking_id)
-    assert booking is not None  # noqa: S101
+    if booking is None:  # FK makes this impossible
+        raise NotFoundError("Booking not found")
     return PaymentOut(
         booking_id=booking.id,
         status=payment.status,
@@ -171,6 +176,7 @@ async def issue_refund(session: AsyncSession, payment_id: uuid.UUID, *, final_at
         payment.refund_status = RefundStatus.PENDING_REVIEW
         await session.commit()
         logger.error("refund_needs_review", payment_id=str(payment.id), reason="missing_ids")
+        await alert_admins(session, payment.id, RefundStatus.PENDING_REVIEW)
         return "pending_review"
 
     try:
@@ -186,6 +192,7 @@ async def issue_refund(session: AsyncSession, payment_id: uuid.UUID, *, final_at
         payment.refund_status = RefundStatus.FAILED
         await session.commit()
         logger.error("refund_failed", payment_id=str(payment.id))
+        await alert_admins(session, payment.id, RefundStatus.FAILED)
         return "failed"
 
     payment.razorpay_refund_id = refund_id
@@ -222,6 +229,8 @@ async def _process_refund_event(
         )
     if payment.razorpay_refund_id not in (None, refund_id):
         return _reject("unknown_refund", event_type=event_type, refund_id=refund_id)
+    if payment.refund_status is RefundStatus.RESOLVED:
+        return "already_resolved"  # an admin closed it by hand; don't reopen
 
     payment.razorpay_refund_id = refund_id
     if event_type == "refund.processed":
@@ -230,8 +239,11 @@ async def _process_refund_event(
         payment.refund_status = RefundStatus.PROCESSED
         payment.refunded_at = datetime.now(UTC)
         return "refund_processed"
+    if payment.refund_status is RefundStatus.FAILED:
+        return "already_failed"
     payment.refund_status = RefundStatus.FAILED
     logger.error("refund_failed", payment_id=str(payment.id), via="webhook")
+    session.info["refund_alert"] = payment.id
     return "refund_failed"
 
 
@@ -313,4 +325,7 @@ async def handle_webhook(
         record.outcome = outcome[:40]
     await session.commit()
     logger.info("webhook_processed", event_id=event_id, event_type=event_type, outcome=outcome)
+    alert_payment_id = session.info.pop("refund_alert", None)
+    if alert_payment_id is not None:
+        await alert_admins(session, alert_payment_id, RefundStatus.FAILED)
     return outcome

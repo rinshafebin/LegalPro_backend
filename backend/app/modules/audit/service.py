@@ -98,7 +98,9 @@ async def list_logs(
     )
     # Case number only: an identifier, not privileged content.
     numbers = dict(
-        (await session.execute(select(Case.id, Case.case_number).where(Case.id.in_(case_ids)))).all()
+        (
+            await session.execute(select(Case.id, Case.case_number).where(Case.id.in_(case_ids)))
+        ).all()
     )
     return [
         AuditLogOut(
