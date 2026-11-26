@@ -1,0 +1,112 @@
+# Local stack: `docker compose up --build`
+#   API docs   http://localhost:${API_PORT:-8000}/docs
+#   Host ports are overridable if taken: API_PORT, DB_HOST_PORT (5433), REDIS_HOST_PORT (6380)
+#   S3 API     http://localhost:8333   (SeaweedFS; creds in docker/seaweedfs/s3.json, local only)
+#   Files UI   http://localhost:8888   (SeaweedFS filer browser)
+#   Mailpit    http://localhost:8025   (catches all outgoing email)
+#
+# All images are pinned to exact versions. Bump them deliberately.
+
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql+asyncpg://app:app@db:5432/advocate
+    REDIS_URL: redis://redis:6379/0
+    S3_ENDPOINT_URL: http://seaweedfs:8333
+    S3_PUBLIC_ENDPOINT_URL: http://localhost:8333
+    S3_ACCESS_KEY: devaccess
+    S3_SECRET_KEY: devsecret-local-only
+    SMTP_HOST: mailpit
+    SMTP_PORT: "1025"
+    # Override for local testing, e.g. BOOKING_PAYMENT_TIMEOUT_MINUTES=1 docker compose up
+    BOOKING_PAYMENT_TIMEOUT_MINUTES: ${BOOKING_PAYMENT_TIMEOUT_MINUTES:-15}
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16.16-alpine3.24
+    environment:
+      POSTGRES_DB: advocate
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports: ["${DB_HOST_PORT:-5433}:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d advocate"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7.4.12-alpine3.22
+    ports: ["${REDIS_HOST_PORT:-6380}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # S3-compatible storage. Replaces MinIO, whose community images are no longer published.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.55
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json"]
+    ports: ["8333:8333", "8888:8888"]
+    volumes:
+      - seaweedfsdata:/data
+      - ./docker/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.55
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    # Idempotent: succeed if the bucket was created or already exists, fail on anything else.
+    command:
+      - >-
+        out=$$(echo "s3.bucket.create -name advocate-files" | weed shell -master=seaweedfs:9333 2>&1);
+        echo "$$out";
+        echo "$$out" | grep -qE "created bucket|already exists"
+
+  mailpit:
+    image: axllent/mailpit:v1.34.0
+    ports: ["8025:8025", "1025:1025"]
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    <<: *app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    ports: ["${API_PORT:-8000}:8000"]
+    volumes: ["./app:/app/app", "./alembic:/app/alembic"]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      seaweedfs-init: { condition: service_completed_successfully }
+
+  worker:
+    <<: *app
+    command: ["saq", "app.workers.settings.settings"]
+    volumes: ["./app:/app/app"]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
+volumes:
+  pgdata:
+  seaweedfsdata:

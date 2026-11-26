@@ -1,0 +1,31 @@
+# Install once:  cd backend && uv run pre-commit install
+# Hooks run through the backend's uv environment, so versions match uv.lock.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: bash -c 'cd backend && uv run ruff check --fix .'
+        pass_filenames: false
+        language: system
+        types: [python]
+        files: ^backend/
+      - id: ruff-format
+        name: ruff format
+        entry: bash -c 'cd backend && uv run ruff format .'
+        pass_filenames: false
+        language: system
+        types: [python]
+        files: ^backend/
+      - id: mypy
+        name: mypy
+        entry: bash -c 'cd backend && uv run mypy app tests alembic/env.py'
+        language: system
+        types: [python]
+        files: ^backend/
+        pass_filenames: false
+      - id: no-env-files
+        name: block committing .env files
+        entry: .env files must not be committed
+        language: fail
+        files: (^|/)\.env$

@@ -1,0 +1,96 @@
+name: backend-ci
+
+on:
+  push:
+    branches: [main, develop]
+    paths: ["backend/**", ".github/workflows/backend-ci.yml"]
+  pull_request:
+    paths: ["backend/**", ".github/workflows/backend-ci.yml"]
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16.16-alpine3.24
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: advocate_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U app -d advocate_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7.4.12-alpine3.22
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
+    env:
+      ENVIRONMENT: test
+      SECRET_KEY: ci-secret-key-not-used-anywhere-else
+      JWT_SECRET_KEY: ci-jwt-secret-key-at-least-32-characters
+      DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/advocate_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/advocate_test
+      REDIS_URL: redis://localhost:6379/15
+      TEST_REDIS_URL: redis://localhost:6379/15
+      CORS_ORIGINS: http://localhost:5173
+      FIELD_ENCRYPTION_KEY: v7N5LcSZ-93Igu9nICjAJgJku9kd6YLHZaY34hcKt58=
+      RAZORPAY_KEY_ID: rzp_test_ci
+      RAZORPAY_KEY_SECRET: ci-razorpay-secret
+      RAZORPAY_WEBHOOK_SECRET: ci-razorpay-webhook-secret
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy app tests alembic/env.py
+
+      - name: Migrations apply cleanly
+        run: uv run alembic upgrade head && uv run alembic check
+
+      - name: Tests
+        run: uv run pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
