@@ -29,6 +29,16 @@ class AuditContext:
     request_id: str | None
 
 
+# Stored for legal/dispute purposes but never returned by the API.
+HIDDEN_DETAILS = frozenset({"previous_body"})
+
+
+def _visible_details(details: dict[str, Any] | None) -> dict[str, Any] | None:
+    if details is None:
+        return None
+    return {k: ("[retained, not shown]" if k in HIDDEN_DETAILS else v) for k, v in details.items()}
+
+
 def audit_context(request: Request) -> AuditContext:
     # Same source as rate limiting: the TCP peer, or X-Forwarded-For only from trusted proxies.
     host = client_ip(request)
@@ -115,7 +125,7 @@ async def list_logs(
             entity_id=r.entity_id,
             ip=str(r.ip) if r.ip else None,
             request_id=r.request_id,
-            details=r.details,
+            details=_visible_details(r.details),
         )
         for r in rows
     ], total

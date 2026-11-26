@@ -134,6 +134,33 @@ def _case_email(case: Case, line: str) -> tuple[str, str]:
     )
 
 
+async def _notify_case(
+    session: AsyncSession,
+    case: Case,
+    actor_id: uuid.UUID,
+    type_: NotificationType,
+    line: str,
+    extra: dict[str, str] | None = None,
+) -> None:
+    """Tell everyone on the case except the actor. Callers only use this for things the
+    client may see (never private notes or hidden documents), so the client is included."""
+    members = await _members(session, case.id)
+    ids = {case.client_id, case.lead_advocate_id, *(m.advocate_id for m in members)} - {actor_id}
+    if not ids:
+        return
+    users = (await session.scalars(select(User).where(User.id.in_(ids)))).all()
+    data = {"case_id": str(case.id), "case_number": case.case_number, **(extra or {})}
+    for u in users:
+        await notify(
+            session,
+            u,
+            type_,
+            title=f"Update on case {case.case_number}",
+            data=data,
+            email=_case_email(case, line),
+        )
+
+
 async def view_case(
     session: AsyncSession, user: User, case_id: uuid.UUID, audit: AuditContext
 ) -> tuple[Case, CaseRole]:
@@ -248,6 +275,15 @@ async def update_case(
             details={"from": old_status.value, "to": case.status.value},
         )
     await session.commit()
+    if case.status is not old_status:
+        await _notify_case(
+            session,
+            case,
+            user.id,
+            NotificationType.CASE_STATUS_CHANGED,
+            f"The status of case {case.case_number} changed.",
+            {"status": case.status.value},
+        )
     return case, role
 
 
@@ -353,6 +389,15 @@ async def add_note(session: AsyncSession, user: User, case_id: uuid.UUID, data: 
     note = CaseNote(case_id=case.id, author_id=user.id, body=data.body, is_private=data.is_private)
     session.add(note)
     await session.commit()
+    if not note.is_private:  # private notes never reach the client, not even as a notice
+        await _notify_case(
+            session,
+            case,
+            user.id,
+            NotificationType.CASE_NOTE_ADDED,
+            f"A new note was added to case {case.case_number}.",
+            {"note_id": str(note.id)},
+        )
     return note
 
 
@@ -449,6 +494,15 @@ async def upload_document(
         await get_storage().delete(key)
         raise
     logger.info("case_document_uploaded", case_id=str(case.id), document_id=str(doc_id))
+    if document.visible_to_client:  # hidden documents are never announced
+        await _notify_case(
+            session,
+            case,
+            user.id,
+            NotificationType.CASE_DOCUMENT_ADDED,
+            f"A new document was added to case {case.case_number}.",
+            {"document_id": str(doc_id)},
+        )
     return document
 
 
@@ -565,7 +619,26 @@ async def add_hearing(
     session.add(hearing)
     await session.commit()
     await _schedule_hearing_reminders(hearing)
+    await _notify_hearing(session, case, user.id, hearing, "scheduled")
     return hearing
+
+
+async def _notify_hearing(
+    session: AsyncSession, case: Case, actor_id: uuid.UUID, hearing: Hearing, what: str
+) -> None:
+    lead = await session.get(AdvocateProfile, case.lead_advocate_id)
+    when = format_local(hearing.scheduled_at, lead.timezone if lead else "Asia/Kolkata")
+    line = f"A hearing in case {case.case_number} was {what}: {when}."
+    if hearing.status is not HearingStatus.SCHEDULED:
+        line = f"A hearing in case {case.case_number} is now {hearing.status.value}."
+    await _notify_case(
+        session,
+        case,
+        actor_id,
+        NotificationType.CASE_HEARING_CHANGED,
+        line,
+        {"hearing_id": str(hearing.id), "scheduled_at": hearing.scheduled_at.isoformat()},
+    )
 
 
 async def update_hearing(
@@ -598,6 +671,7 @@ async def update_hearing(
         await _abort_hearing_reminders(hearing.id, old_at)
         if hearing.status is HearingStatus.SCHEDULED:
             await _schedule_hearing_reminders(hearing)
+        await _notify_hearing(session, case, user.id, hearing, "moved")
     return hearing
 
 

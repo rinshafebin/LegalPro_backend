@@ -23,9 +23,12 @@ class MessageOut(BaseModel):
     room_id: uuid.UUID
     sender_id: uuid.UUID
     client_msg_id: uuid.UUID | None
-    body: str | None
+    body: str | None = Field(description="null when deleted")
     attachment: AttachmentOut | None
     created_at: datetime
+    edited: bool = False
+    edited_at: datetime | None = None
+    deleted: bool = False
 
 
 class MessageIn(BaseModel):
@@ -35,6 +38,10 @@ class MessageIn(BaseModel):
     client_msg_id: uuid.UUID | None = Field(
         default=None, description="Client-generated id; resending the same id is a no-op."
     )
+
+
+class MessageEditIn(BaseModel):
+    body: MessageBody
 
 
 class MessagePage(BaseModel):

@@ -105,6 +105,8 @@ class AdvocateProfile(TimestampMixin, Base):
     city: Mapped[str | None] = mapped_column(String(120))
     state: Mapped[str | None] = mapped_column(String(120))
     pincode: Mapped[str | None] = mapped_column(String(12))
+    # S3 object key; shown (also in public search) through short-lived signed URLs only.
+    avatar_key: Mapped[str | None] = mapped_column(String(512))
 
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -18,6 +18,10 @@ class NotificationType(StrEnum):
     CASE_OPENED = "case.opened"
     CASE_MEMBER_ADDED = "case.member_added"
     HEARING_REMINDER = "hearing.reminder"
+    CASE_STATUS_CHANGED = "case.status_changed"
+    CASE_NOTE_ADDED = "case.note_added"  # non-private notes only
+    CASE_DOCUMENT_ADDED = "case.document_added"  # client-visible documents only
+    CASE_HEARING_CHANGED = "case.hearing_changed"  # added, moved or status changed
     CHAT_MESSAGE = "chat.message"
     REFUND_ATTENTION = "refund.attention"  # admins only
 

@@ -1,9 +1,10 @@
 """S3-compatible object storage. Objects are private; reads go through presigned URLs only."""
 
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import quote
 
 import aioboto3
+import botocore.session
 from botocore.config import Config
 
 from app.core.config import get_settings
@@ -38,6 +39,8 @@ class S3Storage:
     def __init__(self) -> None:
         self._session = aioboto3.Session()
         self._config = Config(signature_version="s3v4", s3={"addressing_style": "path"})
+        # Sync botocore client, created once: presigning is local CPU work, no network.
+        self._signer: Any = None
 
     def _client(self, endpoint_url: str | None):  # type: ignore[no-untyped-def]
         s = get_settings()
@@ -61,23 +64,33 @@ class S3Storage:
             logger.exception("storage_put_failed", key=key)
             raise StorageError("File storage is unavailable; try again") from exc
 
+    def _get_signer(self) -> Any:
+        if self._signer is None:
+            s = get_settings()
+            self._signer = botocore.session.get_session().create_client(
+                "s3",
+                # Sign against the URL the browser will use (the host is part of the signature).
+                endpoint_url=s.s3_public_endpoint_url or s.s3_endpoint_url,
+                aws_access_key_id=s.s3_access_key or None,
+                aws_secret_access_key=s.s3_secret_key.get_secret_value() or None,
+                region_name=s.s3_region,
+                config=self._config,
+            )
+        return self._signer
+
     async def presigned_get(
         self, key: str, *, filename: str, content_type: str, ttl_seconds: int
     ) -> str:
-        s = get_settings()
-        # Sign against the URL the browser will use (the host is part of the signature).
-        endpoint = s.s3_public_endpoint_url or s.s3_endpoint_url
-        async with self._client(endpoint) as client:
-            url: str = await client.generate_presigned_url(
-                "get_object",
-                Params={
-                    "Bucket": s.s3_bucket,
-                    "Key": key,
-                    "ResponseContentDisposition": content_disposition(filename),
-                    "ResponseContentType": content_type,
-                },
-                ExpiresIn=ttl_seconds,
-            )
+        url: str = self._get_signer().generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": get_settings().s3_bucket,
+                "Key": key,
+                "ResponseContentDisposition": content_disposition(filename),
+                "ResponseContentType": content_type,
+            },
+            ExpiresIn=ttl_seconds,
+        )
         return url
 
     async def delete(self, key: str) -> None:

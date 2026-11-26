@@ -77,6 +77,9 @@ class AdvocatePublicOut(BaseModel):
     city: str | None
     state: str | None
     specializations: list[SpecializationOut]
+    avatar_url: str | None = Field(
+        default=None, description="Short-lived signed URL (S3_PRESIGN_TTL_SECONDS)"
+    )
 
 
 class AdvocateMeOut(AdvocatePublicOut):

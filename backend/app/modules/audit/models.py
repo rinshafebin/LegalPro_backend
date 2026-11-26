@@ -19,6 +19,8 @@ class AuditAction(StrEnum):
     DOCUMENT_UPLOADED = "document.uploaded"
     DOCUMENT_DOWNLOADED = "document.downloaded"
     DOCUMENT_DELETED = "document.deleted"
+    CHAT_MESSAGE_EDITED = "chat.message_edited"
+    CHAT_MESSAGE_DELETED = "chat.message_deleted"
     REFUND_RETRIED = "payment.refund_retried"
     REFUND_MARKED_HANDLED = "payment.refund_marked_handled"
 
@@ -26,8 +28,10 @@ class AuditAction(StrEnum):
 class AuditLog(Base):
     """Append-only: a database trigger rejects UPDATE, DELETE and TRUNCATE.
 
-    Holds who/what/when/where only, never case content. `entity_id` has no foreign key on
-    purpose: the entry must outlive the document or member it refers to.
+    Holds who/what/when/where. The one exception is the original text of an edited or
+    deleted chat message (`details.previous_body`), kept for disputes; the admin listing
+    never returns it. `entity_id` has no foreign key on purpose: the entry must outlive
+    the document or member it refers to.
     """
 
     __tablename__ = "audit_logs"

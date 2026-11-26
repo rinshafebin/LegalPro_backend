@@ -215,12 +215,38 @@ issued, so a retry can never over-refund. Statuses that need an admin: `failed`,
 - **Emails about cases** carry the case number, the time (for hearings) and a link. They never
   include titles, courts, purposes, notes or document names.
 
+## Profile images
+
+- `PUT /api/v1/users/me/avatar` (multipart `file`) and `DELETE /users/me/avatar`, for clients
+  and advocates.
+- **Validation:** PNG or JPEG only, detected from the content as for case documents. The limit
+  is `AVATAR_MAX_MB` (2 MB) and at most `AVATAR_MAX_PIXELS` per side.
+- **Re-encoding:** every image is re-encoded with Pillow. That strips EXIF metadata (including
+  GPS) and rejects files that only look like images.
+- **Storage and URLs:** objects are private. Profiles, including public advocate search and
+  detail, return `avatar_url` as a signed URL valid for `S3_PRESIGN_TTL_SECONDS`. URLs are
+  signed locally with one cached client, so a search page doesn't call S3.
+
+## Advocate dashboard
+
+`GET /api/v1/advocates/me/dashboard` returns:
+- case counts by status (cases you lead or are a member of)
+- scheduled hearings in the next 7 days
+- upcoming confirmed bookings
+- bookings still waiting for payment
+- refunds on your bookings that are `requested`, `failed` or `pending_review`
+
+It uses plain queries with no caching.
+
 ## Audit log (admins)
 
 - `GET /api/v1/admin/audit-logs`: filter by `case_id`, `actor_id`, `action`, `since`, `until`.
   Newest first. Admins only.
 - **What's recorded:** case created, viewed and status changed; members added and removed;
-  documents uploaded, downloaded and deleted; refund retries and refunds marked handled.
+  documents uploaded, downloaded and deleted; chat messages edited and deleted; refund
+  retries and refunds marked handled.
+- **Chat edits and deletes** keep the original text in `details.previous_body`. The API shows
+  it as "[retained, not shown]"; it can only be read from the database.
 - **Each entry holds:** actor, action, case, target id, IP and request id. It never holds case
   content.
 - **Append-only:** a Postgres trigger rejects UPDATE, DELETE and TRUNCATE on `audit_logs`.
@@ -299,6 +325,13 @@ issued, so a retry can never over-refund. Statuses that need an admin: `failed`,
     message.
   - Unread counts appear in `GET /chat/rooms` and `GET /chat/unread`.
   - `GET /chat/rooms/{id}` returns each participant's `last_read_seq`.
+- **Edit and delete:** `PATCH` and `DELETE /chat/rooms/{id}/messages/{message_id}`.
+  - Only the sender can do either. Edits are allowed within `CHAT_EDIT_WINDOW_MINUTES` (15)
+    and set `edited`.
+  - Delete is a soft delete. The message stays as a placeholder (`deleted: true`,
+    `body: null`), an attachment's object is kept but no longer served, and the original
+    text goes to the audit log.
+  - Both are broadcast as `chat.message_updated`.
 - **Attachments:** `POST /chat/rooms/{id}/attachments` uses the case document validation
   (type from content, `CHAT_ATTACHMENT_MAX_MB`, private objects, presigned download).
 
@@ -328,7 +361,9 @@ issued, so a retry can never over-refund. Statuses that need an admin: `failed`,
   In-app notifications always stay on.
 - **Types:**
   - Bookings: confirmed, cancelled, rescheduled, reminder
-  - Cases: case opened, member added, hearing reminder
+  - Cases: case opened, member added, hearing reminder, status changed, new note (non-private
+    only), new document (client-visible only), hearing added or changed. The client is never
+    told about private notes or hidden documents.
   - Chat: new messages. At most one per room per recipient per
     `CHAT_NOTIFY_THROTTLE_MINUTES`, and it never contains the message text.
   - Refunds: `refund.attention`, for admins only.

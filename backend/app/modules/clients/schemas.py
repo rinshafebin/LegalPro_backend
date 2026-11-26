@@ -15,6 +15,7 @@ class ClientProfileOut(BaseModel):
     city: str | None
     state: str | None
     pincode: str | None
+    avatar_url: str | None = Field(default=None, description="Short-lived signed URL")
 
 
 class ClientProfileUpdateIn(BaseModel):

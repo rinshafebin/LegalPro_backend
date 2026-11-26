@@ -8,7 +8,7 @@ Redis (`realtime.pubsub`); the recipients are computed from the database at that
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from fastapi import UploadFile
 from sqlalchemy import ColumnElement, and_, func, select, update
@@ -17,13 +17,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.errors import ConflictError, NotFoundError
+from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.core.logging import get_logger
 from app.core.pagination import PageParams
 from app.core.rate_limit import hit
 from app.core.redis import get_redis
 from app.core.storage import get_storage
 from app.modules.advocates.models import AdvocateProfile
+from app.modules.audit.models import AuditAction
+from app.modules.audit.service import AuditContext, record
 from app.modules.bookings.models import Booking
 from app.modules.cases import files
 from app.modules.cases.models import Case
@@ -75,6 +77,7 @@ def _unread_filter(user: User) -> ColumnElement[bool]:
     return and_(
         ChatMessage.room_id == ChatRoom.id,
         ChatMessage.sender_id != user.id,
+        ChatMessage.deleted_at.is_(None),
         ChatMessage.seq > func.coalesce(ChatReadState.last_read_seq, 0),
     )
 
@@ -229,8 +232,9 @@ async def unread_total(session: AsyncSession, user: User) -> int:
 
 
 def to_message_out(m: ChatMessage) -> MessageOut:
+    deleted = m.deleted_at is not None
     attachment = None
-    if m.attachment_key is not None:
+    if m.attachment_key is not None and not deleted:
         attachment = AttachmentOut(
             filename=m.attachment_filename or "attachment",
             content_type=m.attachment_content_type or "application/octet-stream",
@@ -242,9 +246,12 @@ def to_message_out(m: ChatMessage) -> MessageOut:
         room_id=m.room_id,
         sender_id=m.sender_id,
         client_msg_id=m.client_msg_id,
-        body=m.body,
+        body=None if deleted else m.body,
         attachment=attachment,
         created_at=m.created_at,
+        edited=m.edited_at is not None,
+        edited_at=m.edited_at,
+        deleted=deleted,
     )
 
 
@@ -408,7 +415,7 @@ async def attachment_url(
     message = await session.scalar(
         select(ChatMessage).where(ChatMessage.id == message_id, ChatMessage.room_id == room.id)
     )
-    if message is None or message.attachment_key is None:
+    if message is None or message.attachment_key is None or message.deleted_at is not None:
         raise NotFoundError("Attachment not found")
     ttl = get_settings().s3_presign_ttl_seconds
     url = await get_storage().presigned_get(
@@ -418,6 +425,105 @@ async def attachment_url(
         ttl_seconds=ttl,
     )
     return url, ttl
+
+
+# ---------------------------------------------------------------- edit / delete
+
+
+async def _own_message(
+    session: AsyncSession, user: User, room_id: uuid.UUID, message_id: uuid.UUID
+) -> tuple[ChatRoom, ChatMessage]:
+    await _rate_limit(user)
+    room = await get_room_for(session, user, room_id)
+    await require_writable(session, room)
+    message = await session.scalar(
+        select(ChatMessage)
+        .where(ChatMessage.id == message_id, ChatMessage.room_id == room.id)
+        .with_for_update()
+    )
+    if message is None:
+        raise NotFoundError("Message not found")
+    if message.sender_id != user.id:
+        raise ForbiddenError("Only the sender can change a message")
+    return room, message
+
+
+async def _broadcast_update(session: AsyncSession, room: ChatRoom, message: ChatMessage) -> None:
+    recipients = await participant_ids(session, room)
+    out = to_message_out(message).model_dump(mode="json")
+    await publish(recipients, {"type": "chat.message_updated", "message": out})
+
+
+async def edit_message(
+    session: AsyncSession,
+    user: User,
+    room_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: str,
+    audit: AuditContext,
+) -> ChatMessage:
+    room, message = await _own_message(session, user, room_id, message_id)
+    if message.deleted_at is not None:
+        raise ConflictError("A deleted message can't be edited", code="message_deleted")
+    window = timedelta(minutes=get_settings().chat_edit_window_minutes)
+    if datetime.now(UTC) - message.created_at > window:
+        raise ConflictError(
+            f"Messages can only be edited for {window.total_seconds() / 60:g} minutes",
+            code="edit_window_closed",
+        )
+    if body == message.body:
+        await session.commit()
+        return message
+    record(
+        session,
+        audit,
+        user.id,
+        AuditAction.CHAT_MESSAGE_EDITED,
+        case_id=room.case_id,
+        entity_type="chat_message",
+        entity_id=message.id,
+        details={"room_id": str(room.id), "previous_body": message.body},
+    )
+    message.body = body
+    message.edited_at = datetime.now(UTC)
+    await session.commit()
+    await _broadcast_update(session, room, message)
+    return message
+
+
+async def delete_message(
+    session: AsyncSession,
+    user: User,
+    room_id: uuid.UUID,
+    message_id: uuid.UUID,
+    audit: AuditContext,
+) -> ChatMessage:
+    room, message = await _own_message(session, user, room_id, message_id)
+    if message.deleted_at is not None:
+        await session.commit()
+        return message  # already deleted: idempotent
+    details: dict[str, object] = {"room_id": str(room.id), "previous_body": message.body}
+    if message.attachment_key is not None:
+        details["attachment"] = {
+            "key": message.attachment_key,
+            "filename": message.attachment_filename,
+            "sha256": message.attachment_sha256,
+        }
+    record(
+        session,
+        audit,
+        user.id,
+        AuditAction.CHAT_MESSAGE_DELETED,
+        case_id=room.case_id,
+        entity_type="chat_message",
+        entity_id=message.id,
+        details=details,
+    )
+    message.body = None
+    message.deleted_at = datetime.now(UTC)
+    await session.commit()
+    await _broadcast_update(session, room, message)
+    return message
 
 
 # ---------------------------------------------------------------- read receipts

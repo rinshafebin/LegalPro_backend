@@ -1,6 +1,7 @@
 """Chat over REST: rooms, access, history, read receipts, limits, attachments."""
 
 import uuid
+from datetime import timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -337,3 +338,119 @@ async def test_new_message_notifies_others_once_without_the_text(
     assert "Secret merger" not in emails[0]["body"] + emails[0]["subject"]
     assert "CASE-" in emails[0]["subject"]
     assert f"/chat/{chat.room_id}" in emails[0]["body"]
+
+
+# ---------------------------------------------------------------- edit / delete
+
+
+async def _admin(db_session: AsyncSession) -> dict[str, str]:
+    from app.modules.users.models import UserRole
+    from tests.helpers import make_user
+
+    return (await make_user(db_session, UserRole.ADMIN, "admin@example.com")).headers
+
+
+async def test_sender_can_edit_within_the_window(
+    client: AsyncClient, chat: ChatWorld, db_session: AsyncSession
+) -> None:
+    from sqlalchemy import text, update
+
+    message = await send(client, chat.client, chat.room_id, "Meet at 10")
+    url = f"{API}/chat/rooms/{chat.room_id}/messages/{message['id']}"
+    edited = await client.patch(url, headers=chat.client.headers, json={"body": "Meet at 11"})
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["body"] == "Meet at 11"
+    assert edited.json()["edited"] is True
+    listed = (
+        await client.get(f"{API}/chat/rooms/{chat.room_id}/messages", headers=chat.lead.headers)
+    ).json()
+    assert listed["items"][0]["edited"] is True
+
+    # The original text is kept in the audit log, but the admin API doesn't show it.
+    admin = await _admin(db_session)
+    [log] = (
+        await client.get(
+            f"{API}/admin/audit-logs", headers=admin, params={"action": "chat.message_edited"}
+        )
+    ).json()["items"]
+    assert log["entity_id"] == message["id"]
+    assert log["details"]["previous_body"] == "[retained, not shown]"
+    stored = await db_session.scalar(
+        text(
+            "SELECT details->>'previous_body' FROM audit_logs WHERE action = 'chat.message_edited'"
+        )
+    )
+    assert stored == "Meet at 10"
+
+    # Others can't edit; the window closes after 15 minutes.
+    assert (
+        await client.patch(url, headers=chat.lead.headers, json={"body": "x"})
+    ).status_code == 403
+    assert (
+        await client.patch(url, headers=chat.outsider.headers, json={"body": "x"})
+    ).status_code == 404
+    await db_session.execute(
+        update(ChatMessage).values(created_at=ChatMessage.created_at - timedelta(minutes=16))
+    )
+    await db_session.commit()
+    late = await client.patch(url, headers=chat.client.headers, json={"body": "Meet at 12"})
+    assert late.status_code == 409
+    assert late.json()["error"]["code"] == "edit_window_closed"
+
+
+async def test_soft_delete_leaves_a_placeholder(
+    client: AsyncClient, chat: ChatWorld, db_session: AsyncSession, storage: FakeStorage
+) -> None:
+    from sqlalchemy import text
+
+    resp = await client.post(
+        f"{API}/chat/rooms/{chat.room_id}/attachments",
+        headers=chat.lead.headers,
+        files={"file": ("draft.pdf", PDF, "application/pdf")},
+        data={"body": "draft attached"},
+    )
+    message = resp.json()
+    url = f"{API}/chat/rooms/{chat.room_id}/messages/{message['id']}"
+    assert (await client.delete(url, headers=chat.client.headers)).status_code == 403
+
+    deleted = await client.delete(url, headers=chat.lead.headers)
+    assert deleted.status_code == 200
+    body = deleted.json()
+    assert body["deleted"] is True
+    assert body["body"] is None
+    assert body["attachment"] is None
+    listed = (
+        await client.get(f"{API}/chat/rooms/{chat.room_id}/messages", headers=chat.client.headers)
+    ).json()
+    assert listed["items"][0]["deleted"] is True
+    assert listed["items"][0]["body"] is None
+    download = await client.get(f"{url}/attachment", headers=chat.client.headers)
+    assert download.status_code == 404
+    assert len(storage.objects) == 1  # soft delete: the object is retained
+    assert (await client.get(f"{API}/chat/unread", headers=chat.client.headers)).json()[
+        "unread"
+    ] == 0
+
+    again = await client.delete(url, headers=chat.lead.headers)
+    assert again.status_code == 200  # idempotent
+    edit = await client.patch(url, headers=chat.lead.headers, json={"body": "undo"})
+    assert edit.json()["error"]["code"] == "message_deleted"
+    stored = await db_session.scalar(
+        text("SELECT details FROM audit_logs WHERE action = 'chat.message_deleted'")
+    )
+    assert stored["previous_body"] == "draft attached"
+    assert stored["attachment"]["filename"] == "draft.pdf"
+
+
+async def test_removed_member_cant_change_old_messages(
+    client: AsyncClient, chat: ChatWorld
+) -> None:
+    message = await send(client, chat.member, chat.room_id, "mine")
+    await client.delete(
+        f"{API}/cases/{chat.case_id}/members/{chat.member.id}", headers=chat.lead.headers
+    )
+    url = f"{API}/chat/rooms/{chat.room_id}/messages/{message['id']}"
+    assert (
+        await client.patch(url, headers=chat.member.headers, json={"body": "x"})
+    ).status_code == 404
+    assert (await client.delete(url, headers=chat.member.headers)).status_code == 404

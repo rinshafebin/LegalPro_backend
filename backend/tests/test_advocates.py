@@ -286,6 +286,7 @@ async def test_client_profile_get_and_update(client: AsyncClient, db_session: As
         "city": "Kochi",
         "state": None,
         "pincode": "682001",
+        "avatar_url": None,
     }
 
 

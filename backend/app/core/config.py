@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     s3_bucket: str = "advocate-files"
     s3_presign_ttl_seconds: int = 300
     case_document_max_mb: int = 20
+    avatar_max_mb: int = 2
+    avatar_max_pixels: int = 4096  # per side
 
     # --- Realtime / chat ---
     ws_ticket_ttl_seconds: int = 30
@@ -88,6 +90,7 @@ class Settings(BaseSettings):
     chat_rate_limit_messages: int = 20
     chat_rate_limit_window_seconds: int = 10
     chat_attachment_max_mb: int = 20
+    chat_edit_window_minutes: int = 15
     # At most one "new message" notification (and email) per room per recipient per window.
     chat_notify_throttle_minutes: int = 10
 

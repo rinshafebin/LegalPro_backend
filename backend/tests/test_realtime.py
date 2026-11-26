@@ -356,3 +356,22 @@ def test_tickets_are_redacted_from_logs() -> None:
     line = '1.2.3.4:5 - "WebSocket /api/v1/ws?ticket=abc-DEF_123" [accepted]'
     out = redact_secrets(None, "info", {"event": line})
     assert out["event"] == '1.2.3.4:5 - "WebSocket /api/v1/ws?ticket=[redacted]" [accepted]'
+
+
+async def test_edits_and_deletes_are_broadcast(ws_client: AsyncClient, chat: ChatWorld) -> None:
+    message = await send(ws_client, chat.client, chat.room_id, "typo")
+    url = f"{API}/chat/rooms/{chat.room_id}/messages/{message['id']}"
+    async with (
+        connect(ws_client, chat.lead) as lead_ws,
+        connect(ws_client, chat.outsider) as out_ws,
+    ):
+        await ws_client.patch(url, headers=chat.client.headers, json={"body": "fixed"})
+        edited = await next_event(lead_ws, "chat.message_updated")
+        assert edited["message"]["body"] == "fixed"
+        assert edited["message"]["edited"] is True
+
+        await ws_client.delete(url, headers=chat.client.headers)
+        deleted = await next_event(lead_ws, "chat.message_updated")
+        assert deleted["message"]["deleted"] is True
+        assert deleted["message"]["body"] is None
+        assert _of_type(await drain(out_ws), "chat.message_updated") == []

@@ -7,7 +7,8 @@ Origin. Frames are JSON. Client -> server:
     {"type": "chat.send", "ref": "1", "room_id": "...", "body": "...", "client_msg_id": "..."}
     {"type": "chat.read", "ref": "2", "room_id": "...", "seq": 42}
 
-Server -> client: ready, pong, ack (with the same `ref`), error, chat.message, chat.read,
+Server -> client: ready, pong, ack (with the same `ref`), error, chat.message,
+chat.message_updated (edit or soft delete), chat.read,
 notification. Each frame re-checks that the account is still active and the session still
 valid, and each chat frame re-checks room access.
 """

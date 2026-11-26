@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.core.deps import SessionDep
 from app.core.pagination import Page, PageDep, make_page
-from app.modules.advocates import service
+from app.modules.advocates import dashboard, service
+from app.modules.advocates.models import AdvocateProfile
 from app.modules.advocates.schemas import (
     AdminAdvocateOut,
     AdvocateMeOut,
@@ -20,6 +21,7 @@ from app.modules.advocates.schemas import (
     TeamUpdateIn,
 )
 from app.modules.auth.deps import require_roles
+from app.modules.users.avatars import avatar_url
 from app.modules.users.models import User, UserRole
 
 AdvocateUser = Annotated[User, Depends(require_roles(UserRole.ADVOCATE))]
@@ -31,20 +33,42 @@ teams_router = APIRouter(prefix="/teams", tags=["teams"])
 admin_router = APIRouter(prefix="/admin/advocates", tags=["admin"])
 
 
+async def _public(profile: AdvocateProfile) -> AdvocatePublicOut:
+    out = AdvocatePublicOut.model_validate(profile)
+    out.avatar_url = await avatar_url(profile.avatar_key)
+    return out
+
+
+async def _me(profile: AdvocateProfile) -> AdvocateMeOut:
+    out = AdvocateMeOut.model_validate(profile)
+    out.avatar_url = await avatar_url(profile.avatar_key)
+    return out
+
+
 # ---------------------------------------------------------------- own profile
 # Declared before "/{advocate_id}" so "/me" isn't parsed as an id.
 
 
 @router.get("/me", response_model=AdvocateMeOut)
 async def get_my_profile(user: AdvocateUser, session: SessionDep) -> AdvocateMeOut:
-    return AdvocateMeOut.model_validate(await service.get_my_profile(session, user))
+    return await _me(await service.get_my_profile(session, user))
+
+
+@router.get(
+    "/me/dashboard",
+    response_model=dashboard.DashboardOut,
+    description="Cases by status, hearings in the next 7 days, upcoming bookings, "
+    "pending payments and refunds in progress.",
+)
+async def my_dashboard(user: AdvocateUser, session: SessionDep) -> dashboard.DashboardOut:
+    return await dashboard.build(session, user)
 
 
 @router.patch("/me", response_model=AdvocateMeOut)
 async def update_my_profile(
     data: AdvocateMeUpdateIn, user: AdvocateUser, session: SessionDep
 ) -> AdvocateMeOut:
-    return AdvocateMeOut.model_validate(await service.update_my_profile(session, user, data))
+    return await _me(await service.update_my_profile(session, user, data))
 
 
 # ---------------------------------------------------------------- public
@@ -62,12 +86,12 @@ async def search_advocates(
     params: Annotated[AdvocateSearchParams, Query()],
 ) -> Page[AdvocatePublicOut]:
     rows, total = await service.search_advocates(session, params, page)
-    return make_page([AdvocatePublicOut.model_validate(r) for r in rows], total, page)
+    return make_page([await _public(r) for r in rows], total, page)
 
 
 @router.get("/{advocate_id}", response_model=AdvocatePublicOut)
 async def get_advocate(advocate_id: uuid.UUID, session: SessionDep) -> AdvocatePublicOut:
-    return AdvocatePublicOut.model_validate(await service.get_public_advocate(session, advocate_id))
+    return await _public(await service.get_public_advocate(session, advocate_id))
 
 
 # ---------------------------------------------------------------- specializations

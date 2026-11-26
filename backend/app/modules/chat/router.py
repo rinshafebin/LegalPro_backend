@@ -5,11 +5,13 @@ from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile,
 
 from app.core.deps import SessionDep
 from app.core.pagination import Page, PageDep, make_page
+from app.modules.audit.service import AuditDep
 from app.modules.auth.deps import require_roles
 from app.modules.cases.schemas import DownloadOut
 from app.modules.chat import service
 from app.modules.chat.schemas import (
     MessageBody,
+    MessageEditIn,
     MessageIn,
     MessageOut,
     MessagePage,
@@ -73,6 +75,37 @@ async def send_message(
     )
     if not created:
         response.status_code = status.HTTP_200_OK
+    return service.to_message_out(message)
+
+
+@router.patch(
+    "/rooms/{room_id}/messages/{message_id}",
+    response_model=MessageOut,
+    description="Sender only, within `CHAT_EDIT_WINDOW_MINUTES`. The previous text is kept "
+    "in the audit log. Broadcast as `chat.message_updated`.",
+)
+async def edit_message(
+    room_id: uuid.UUID,
+    message_id: uuid.UUID,
+    data: MessageEditIn,
+    user: ChatUser,
+    session: SessionDep,
+    audit: AuditDep,
+) -> MessageOut:
+    message = await service.edit_message(session, user, room_id, message_id, data.body, audit)
+    return service.to_message_out(message)
+
+
+@router.delete(
+    "/rooms/{room_id}/messages/{message_id}",
+    response_model=MessageOut,
+    description="Sender only. Soft delete: the message stays as a 'deleted' placeholder; its "
+    "text is kept in the audit log. Broadcast as `chat.message_updated`.",
+)
+async def delete_message(
+    room_id: uuid.UUID, message_id: uuid.UUID, user: ChatUser, session: SessionDep, audit: AuditDep
+) -> MessageOut:
+    message = await service.delete_message(session, user, room_id, message_id, audit)
     return service.to_message_out(message)
 
 

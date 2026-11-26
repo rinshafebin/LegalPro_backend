@@ -77,7 +77,8 @@ class ChatMessage(Base):
             "room_id", "sender_id", "client_msg_id", name="uq_chat_messages_client_msg"
         ),
         CheckConstraint(
-            "body IS NOT NULL OR attachment_key IS NOT NULL", name="body_or_attachment"
+            "deleted_at IS NOT NULL OR body IS NOT NULL OR attachment_key IS NOT NULL",
+            name="body_or_attachment",
         ),
         CheckConstraint(f"char_length(body) <= {MAX_MESSAGE_CHARS}", name="body_length"),
     )
@@ -94,6 +95,10 @@ class ChatMessage(Base):
     attachment_content_type: Mapped[str | None] = mapped_column(String(100))
     attachment_size: Mapped[int | None] = mapped_column(Integer)
     attachment_sha256: Mapped[str | None] = mapped_column(String(64))
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Soft delete: the body is cleared (its text goes to the audit log) and the API shows a
+    # placeholder; an attachment's object is kept in storage but no longer served.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __mapper_args__ = {"eager_defaults": True}
