@@ -37,8 +37,17 @@ uv run saq app.workers.settings.settings   # background worker
 ```bash
 uv run ruff check . && uv run ruff format --check .
 uv run mypy app tests alembic/env.py
-uv run pytest
+uv run pytest --cov            # fails below the coverage floor in pyproject.toml
+uv export --frozen --format requirements-txt -o /tmp/req.txt \
+  && uvx pip-audit -r /tmp/req.txt --require-hashes --disable-pip
 ```
+
+- **Coverage floor:** started at 93.9%. Raise `fail_under` in `pyproject.toml` when coverage
+  goes up; never lower it.
+- **CI** runs on pushes to `main` and `develop`, on pull requests, and weekly (to catch newly
+  published vulnerabilities).
+- **Dependabot** opens weekly PRs against `develop` for Python packages (`uv.lock`), Docker
+  images and GitHub Actions.
 
 Tests use `TEST_DATABASE_URL` (the name must end in `_test`) and `TEST_REDIS_URL` (must not be DB 0).
 Each test runs inside a rolled-back transaction.
@@ -128,6 +137,27 @@ Admins can't self-register. Create one with:
 uv run python -m app.scripts.create_admin admin@example.com          # prompts for password
 docker compose exec api python -m app.scripts.create_admin admin@example.com
 ```
+
+**Admins must use two-factor authentication.**
+- The script turns MFA on and prints the authenticator secret once.
+- Admin endpoints accept only sessions that passed the TOTP step at login. Access tokens carry
+  an `mfa` claim, and refresh keeps it.
+- An admin without MFA can still log in, but only to run `/auth/mfa/setup` and `/confirm`.
+  Then they log in again.
+
+**Admin API (all under `/api/v1/admin`, all audited):**
+
+| Endpoint | What |
+|---|---|
+| `GET /users`, `POST /users/{id}/deactivate` (`reason`), `POST /users/{id}/reactivate` | Account management. Deactivating revokes every session and closes sockets |
+| `GET /advocates`, `POST /advocates/{id}/verify`, `/unverify`; `POST /specializations` | Advocate vetting |
+| `GET /refunds`, `POST /refunds/{id}/retry`, `/mark-handled` | Refunds that need a person |
+| `GET /audit-logs` | The audit trail |
+
+- **Audit:** every admin request is audited. Changes get their own entry, and list views are
+  recorded as `admin.viewed` with the path and query.
+- **No case content:** admins can't read cases, notes, documents or chat. The admin role isn't
+  in those access rules.
 
 ## Key rotation
 
@@ -367,6 +397,103 @@ It uses plain queries with no caching.
   - Chat: new messages. At most one per room per recipient per
     `CHAT_NOTIFY_THROTTLE_MINUTES`, and it never contains the message text.
   - Refunds: `refund.attention`, for admins only.
+
+## Account deletion and data export
+
+**Export:** `GET /api/v1/users/me/export` downloads the user's account, profile, bookings,
+payments and notification settings as JSON. It's limited to 5 per hour and audited.
+
+**Deletion:** `POST /api/v1/users/me/deletion`.
+
+- **Confirmation:**
+  - Password, plus an authenticator code if MFA is on.
+  - Google-only accounts without MFA must have logged in within the last 10 minutes.
+- **Refused (`409 deletion_blocked`)** while the user still has obligations:
+  - an open case they lead
+  - an upcoming or unpaid booking
+  - a refund that isn't finished
+
+  The response lists them.
+- **Admins** can't self-delete; another admin deactivates them.
+- **Grace period:** the account is deactivated immediately (sessions revoked, sockets closed)
+  and anonymized after `ACCOUNT_DELETION_GRACE_DAYS` (14). A daily sweep catches lost jobs.
+  **Logging in during the grace period cancels the deletion.** The user gets an email at each
+  step.
+- **Wiped:**
+  - email, which becomes `deleted-<id>@deleted.invalid` and frees the address
+  - password and MFA
+  - name (now "Deleted user"), phone, address, bio and profile image
+  - notifications and preferences, chat read state, availability, team memberships
+- **Kept:** cases and what the user wrote in them, bookings, payments, the audit log, and an
+  advocate's Bar Council ID (so retained case records still show who handled them). These are
+  records the law may require us to keep. **Retention periods need confirming with a lawyer.**
+
+## Security
+
+- **Headers:** every response gets `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy` and a
+  CSP of `default-src 'none'; frame-ancestors 'none'`.
+  - Swagger UI and ReDoc get a looser CSP for their CDN assets. They're off in production
+    unless `API_DOCS_ENABLED=true`.
+  - HSTS is added in production.
+- **Hosts:** requests with a `Host` not in `ALLOWED_HOSTS` get 400. The health probes and
+  `/metrics` are exempt.
+- **Body limits:**
+  - JSON bodies: `MAX_JSON_BODY_KB` (1 MB).
+  - Multipart: the largest file limit plus 1 MB.
+  - Oversized bodies get 413, including chunked uploads without a `Content-Length`.
+- **Timeouts:** every outbound call has one: Razorpay, Google token checks and S3
+  (`EXTERNAL_*_TIMEOUT_SECONDS`), and SMTP (15 s). Postgres kills statements after
+  `DB_STATEMENT_TIMEOUT_MS`.
+- **Logs:** never contain passwords, tokens, codes, emails or message text.
+  - Values under sensitive keys are replaced.
+  - Emails, JWTs, Bearer tokens and `token=`/`code=`/`ticket=` values are masked in every log
+    line, including uvicorn's access lines and rendered tracebacks.
+
+## Observability
+
+- **Health:** `GET /health` (liveness) and `GET /health/ready` (checks Postgres and Redis).
+- **Metrics:** `GET /metrics` (Prometheus) is off unless `METRICS_TOKEN` is set.
+  - Scrapers send `Authorization: Bearer <token>`. Don't route it through the public proxy.
+  - Labels use route templates (`/api/v1/cases/{case_id}`), never raw ids.
+  - Multiple workers are combined through `PROMETHEUS_MULTIPROC_DIR`.
+- **Sentry:** set `SENTRY_DSN` to enable it. It collects no user identity, cookies, bodies,
+  query strings or local variables, keeps only an allowlist of headers, and scrubs every event
+  string the same way as the logs.
+
+## Production checklist
+
+**Release process:**
+
+1. Run migrations as a separate release step, before starting the new version:
+   `alembic upgrade head` (in compose: the `migrate` service). The app never migrates on
+   start.
+2. Start the API with the image's default command (`docker/start-api.sh`). It runs:
+   - `WEB_CONCURRENCY` uvicorn workers (2 by default; about 2 per CPU core)
+   - no autoreload
+   - `--proxy-headers`
+   - a graceful shutdown that closes WebSockets with 1012 and waits up to
+     `GRACEFUL_SHUTDOWN_SECONDS` (20)
+3. Start the worker: `saq app.workers.settings.settings`. Run one or more; jobs are
+   deduplicated.
+
+**Required environment** (the app refuses to start in production if any of these are unsafe):
+
+| Setting | Production value |
+|---|---|
+| `ENVIRONMENT` | `production` (turns on the strict checks, HSTS and docs-off) |
+| `SECRET_KEY`, `JWT_SECRET_KEY` | Random, at least 32 characters, different from each other |
+| `FIELD_ENCRYPTION_KEY` | Fernet key(s), different from the above. Back them up: losing them loses MFA secrets |
+| `DATABASE_URL`, `REDIS_URL` | Managed Postgres 16 and Redis 7. Size `DB_POOL_SIZE` + `DB_MAX_OVERFLOW` × processes below Postgres `max_connections` |
+| `ALLOWED_HOSTS` | The API hostname(s), e.g. `api.example.com` |
+| `CORS_ORIGINS`, `FRONTEND_URL` | `https://` origins of the web app only |
+| `FORWARDED_ALLOW_IPS` | The reverse proxy / load balancer IP(s), never `*`. Rate limiting and audit IPs depend on it |
+| `S3_*` | Bucket, keys and region. `S3_PUBLIC_ENDPOINT_URL` only if browsers use a different host. Keep the bucket private |
+| `SMTP_*`, `EMAIL_FROM` | A real provider (SES, Postmark, …) with SPF/DKIM set up for the sending domain |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | **Live** keys (`rzp_live_…`) |
+| `RAZORPAY_WEBHOOK_SECRET` | From the Razorpay dashboard webhook for `https://<api-host>/api/v1/payments/webhook`. Events: `payment.captured`, `order.paid`, `payment.failed`, `refund.processed`, `refund.failed` |
+| `GOOGLE_CLIENT_ID` | The production OAuth client |
+| `SENTRY_DSN`, `METRICS_TOKEN` | Optional (the token must be at least 32 characters) |
 
 ## Testing notes
 

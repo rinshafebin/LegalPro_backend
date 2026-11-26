@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, Header, Request, status
 from app.core.deps import SessionDep
 from app.core.errors import AppError
 from app.core.pagination import Page, PageDep, make_page
-from app.modules.audit.service import AuditDep
-from app.modules.auth.deps import require_roles
+from app.modules.audit.service import AuditDep, admin_viewed
+from app.modules.auth.deps import AdminUser, require_roles
 from app.modules.payments import admin, service
 from app.modules.payments.models import RefundStatus
 from app.modules.payments.schemas import (
@@ -22,7 +22,6 @@ from app.modules.payments.schemas import (
 from app.modules.users.models import User, UserRole
 
 ClientUser = Annotated[User, Depends(require_roles(UserRole.CLIENT))]
-AdminUser = Annotated[User, Depends(require_roles(UserRole.ADMIN))]
 MAX_WEBHOOK_BYTES = 1_000_000
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -71,6 +70,7 @@ admin_router = APIRouter(prefix="/admin/refunds", tags=["admin"])
     "",
     response_model=Page[RefundIssueOut],
     description="Refunds that need a person: `failed` and `pending_review` (oldest first).",
+    dependencies=[Depends(admin_viewed)],
 )
 async def list_refund_issues(
     _: AdminUser,

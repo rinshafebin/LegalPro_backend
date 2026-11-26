@@ -21,6 +21,14 @@ def _settings(**overrides: object) -> Settings:
         "database_url": "postgresql+asyncpg://u:p@db/x",
         "jwt_secret_key": "j" * 40,
         "field_encryption_key": Fernet.generate_key().decode(),
+        "allowed_hosts": ["api.example.com"],
+        "frontend_url": "https://app.example.com",
+        "cors_origins": ["https://app.example.com"],
+        "razorpay_key_id": "rzp_live_x",
+        "razorpay_key_secret": "k",
+        "razorpay_webhook_secret": "w",
+        "s3_access_key": "a",
+        "s3_secret_key": "b",
         **overrides,
     }
     return Settings(**values)  # type: ignore[arg-type]

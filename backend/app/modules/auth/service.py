@@ -43,6 +43,7 @@ from app.modules.auth.schemas import (
     TokenPair,
 )
 from app.modules.clients.models import ClientProfile
+from app.modules.users.account import cancel_deletion_on_login, deletion_pending
 from app.modules.users.models import User, UserRole
 from app.modules.users.service import get_profile, to_user_out
 
@@ -157,9 +158,9 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> User
     password_ok = await verify_password(password, user.password_hash if user else None)
     if user is None or not password_ok:
         raise UnauthorizedError("Invalid email or password")
-    if not user.is_active:
+    if not user.is_active and not deletion_pending(user):
         raise ForbiddenError("This account is disabled")
-    return user
+    return user  # pending deletion: a completed login cancels it
 
 
 async def complete_login(session: AsyncSession, user: User) -> LoginOut:
@@ -167,6 +168,7 @@ async def complete_login(session: AsyncSession, user: User) -> LoginOut:
     if user.mfa_enabled:
         return LoginOut(mfa_required=True, mfa_token=tokens.issue_mfa_token(user))
 
+    await cancel_deletion_on_login(session, user)
     user.last_login_at = datetime.now(UTC)
     await session.commit()
     pair = await tokens.issue_token_pair(user)
@@ -194,7 +196,7 @@ async def google_login(session: AsyncSession, id_token: str) -> LoginOut:
         await _commit_new_user(session, user)
         await _queue_email(user.email, emails.welcome(full_name))
         logger.info("user_registered", user_id=str(user.id), role="client", via="google")
-    elif not user.is_active:
+    elif not user.is_active and not deletion_pending(user):
         raise ForbiddenError("This account is disabled")
     elif not user.email_verified:
         user.email_verified = True  # Google has proven ownership of the address
@@ -220,7 +222,7 @@ async def refresh_tokens(session: AsyncSession, refresh_token: str) -> TokenPair
     user = await session.get(User, payload.sub)
     if user is None or not user.is_active or payload.ver != user.token_version:
         raise UnauthorizedError("Refresh token is no longer valid")
-    return await tokens.issue_token_pair(user)
+    return await tokens.issue_token_pair(user, mfa=payload.mfa and user.mfa_enabled)
 
 
 async def logout(refresh_token: str) -> None:
@@ -284,7 +286,7 @@ async def mfa_verify(session: AsyncSession, mfa_token: str, code: str) -> LoginO
     user = await session.get(User, payload.sub)
     if (
         user is None
-        or not user.is_active
+        or (not user.is_active and not deletion_pending(user))
         or payload.ver != user.token_version
         or not user.mfa_enabled
         or user.mfa_secret_encrypted is None
@@ -296,9 +298,10 @@ async def mfa_verify(session: AsyncSession, mfa_token: str, code: str) -> LoginO
     if not await tokens.mark_mfa_token_used(payload):
         raise UnauthorizedError("MFA token has already been used; log in again")
 
+    await cancel_deletion_on_login(session, user)
     user.last_login_at = datetime.now(UTC)
     await session.commit()
-    pair = await tokens.issue_token_pair(user)
+    pair = await tokens.issue_token_pair(user, mfa=True)
     return LoginOut(tokens=pair, user=await to_user_out(session, user))
 
 

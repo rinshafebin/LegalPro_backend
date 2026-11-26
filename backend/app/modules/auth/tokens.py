@@ -39,7 +39,8 @@ def _seconds_until(moment: datetime) -> int:
 # ---------------------------------------------------------------- access/refresh
 
 
-async def issue_token_pair(user: User) -> TokenPair:
+async def issue_token_pair(user: User, *, mfa: bool = False) -> TokenPair:
+    """`mfa=True` only right after a TOTP check; refresh carries it forward."""
     s = get_settings()
     access, _ = create_token(
         user.id,
@@ -47,12 +48,14 @@ async def issue_token_pair(user: User) -> TokenPair:
         timedelta(minutes=s.access_token_ttl_minutes),
         version=user.token_version,
         role=user.role.value,
+        mfa=mfa,
     )
     refresh, payload = create_token(
         user.id,
         TokenType.REFRESH,
         timedelta(days=s.refresh_token_ttl_days),
         version=user.token_version,
+        mfa=mfa,
     )
     redis = get_redis()
     sessions_key = _SESSIONS.format(user_id=user.id)

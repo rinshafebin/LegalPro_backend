@@ -9,7 +9,10 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # env_ignore_empty: `METRICS_TOKEN=` (empty) means "not set", never "set to empty".
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", env_ignore_empty=True
+    )
 
     # --- App ---
     app_name: str = "Advocate & Client Management API"
@@ -22,11 +25,21 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
     # Base URL of the web app; used for links in emails (e.g. email verification).
     frontend_url: str = "http://localhost:5173"
+    # Host headers the API answers to (TrustedHostMiddleware). Health probes are exempt.
+    allowed_hosts: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
+    # Swagger UI / ReDoc / openapi.json. Default: on everywhere except production.
+    api_docs_enabled: bool | None = None
+    # Request bodies: JSON and other non-multipart bodies vs multipart uploads.
+    max_json_body_kb: int = 1024
 
     # Fernet keys for at-rest field encryption (MFA secrets, queued email payloads).
     # Comma-separated, newest first: the first key encrypts, all keys decrypt. To rotate,
     # prepend a new key, run `python -m app.scripts.rotate_field_encryption`, then drop the old.
     field_encryption_key: Annotated[list[SecretStr], NoDecode]
+
+    # --- Outbound calls (Razorpay, Google, S3); SMTP uses its own timeout ---
+    external_connect_timeout_seconds: float = 5
+    external_read_timeout_seconds: float = 15
 
     # --- Infrastructure ---
     database_url: str
@@ -34,6 +47,21 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     test_redis_url: str | None = None
     db_echo: bool = False
+    # Per API/worker process. Keep pool_size + max_overflow, times processes, under
+    # Postgres max_connections.
+    db_pool_size: int = 10
+    db_max_overflow: int = 5
+    db_pool_timeout_seconds: int = 10
+    db_pool_recycle_seconds: int = 1800
+    # Kill runaway queries and transactions left open by a crashed request.
+    db_statement_timeout_ms: int = 15_000
+    db_idle_in_transaction_timeout_ms: int = 60_000
+
+    # --- Observability ---
+    sentry_dsn: SecretStr | None = None  # error monitoring is off unless set
+    sentry_traces_sample_rate: float = 0.0
+    # /metrics (Prometheus) is disabled unless set; scrapers send `Authorization: Bearer ...`.
+    metrics_token: SecretStr | None = None
 
     # --- Auth ---
     jwt_secret_key: SecretStr
@@ -45,6 +73,9 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     mfa_issuer: str = "Advocate Platform"
     email_verification_ttl_hours: int = 48
+    # Account deletion: deactivated at once, personal data wiped after this many days
+    # unless the user logs back in.
+    account_deletion_grace_days: int = 14
 
     # --- Email ---
     smtp_host: str = "localhost"
@@ -101,6 +132,13 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    @field_validator("allowed_hosts", mode="before")
+    @classmethod
+    def _split_hosts(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [host.strip() for host in value.split(",") if host.strip()]
+        return value
+
     @field_validator("field_encryption_key", mode="before")
     @classmethod
     def _split_keys(cls, value: object) -> object:
@@ -152,11 +190,45 @@ class Settings(BaseSettings):
                 raise ValueError("FIELD_ENCRYPTION_KEY contains duplicate keys")
             if self.ws_allow_missing_origin:
                 raise ValueError("WS_ALLOW_MISSING_ORIGIN must be false in production")
+            if not self.allowed_hosts or "*" in self.allowed_hosts:
+                raise ValueError("ALLOWED_HOSTS must list the API's hostnames in production")
+            if not self.frontend_url.startswith("https://"):
+                raise ValueError("FRONTEND_URL must use https in production")
+            if any(not o.startswith("https://") for o in self.cors_origins):
+                raise ValueError("CORS_ORIGINS must all use https in production")
+            if not (
+                self.razorpay_key_id
+                and self.razorpay_key_secret.get_secret_value()
+                and self.razorpay_webhook_secret.get_secret_value()
+            ):
+                raise ValueError(
+                    "RAZORPAY_KEY_ID/KEY_SECRET/WEBHOOK_SECRET are required in production"
+                )
+            if not (self.s3_access_key and self.s3_secret_key.get_secret_value()):
+                raise ValueError("S3_ACCESS_KEY/S3_SECRET_KEY are required in production")
+            if self.metrics_token is not None and len(self.metrics_token.get_secret_value()) < 32:
+                raise ValueError("METRICS_TOKEN must be at least 32 characters")
         return self
 
     @property
     def is_test(self) -> bool:
         return self.environment == "test"
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
+
+    @property
+    def docs_enabled(self) -> bool:
+        if self.api_docs_enabled is not None:
+            return self.api_docs_enabled
+        return not self.is_production
+
+    @property
+    def max_upload_body_bytes(self) -> int:
+        """Largest multipart body: the biggest file limit plus 1 MB for form overhead."""
+        largest = max(self.case_document_max_mb, self.chat_attachment_max_mb, self.avatar_max_mb)
+        return (largest + 1) * 1024 * 1024
 
 
 @lru_cache

@@ -10,7 +10,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import TokenType, create_token
+from app.core.security import TokenType, create_token, encrypt_str
 from app.modules.advocates.models import AdvocateProfile, Specialization
 from app.modules.clients.models import ClientProfile
 from app.modules.users.models import User, UserRole
@@ -87,6 +87,7 @@ def _headers_for(user: User) -> dict[str, str]:
         timedelta(minutes=15),
         version=user.token_version,
         role=user.role.value,
+        mfa=user.mfa_enabled,  # as if the session passed the TOTP check at login
     )
     return bearer(token)
 
@@ -99,6 +100,7 @@ async def make_user(
     email_verified: bool = True,
     is_active: bool = True,
     full_name: str = "Test User",
+    mfa: bool = True,
 ) -> Actor:
     user = User(
         email=email,
@@ -107,6 +109,9 @@ async def make_user(
         email_verified=email_verified,
         is_active=is_active,
     )
+    if role is UserRole.ADMIN and mfa:  # admins need MFA to use admin endpoints
+        user.mfa_enabled = True
+        user.mfa_secret_encrypted = encrypt_str(pyotp.random_base32())
     if role is UserRole.CLIENT:
         user.client_profile = ClientProfile(full_name=full_name)
     session.add(user)

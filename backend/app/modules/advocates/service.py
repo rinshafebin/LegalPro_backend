@@ -26,6 +26,8 @@ from app.modules.advocates.schemas import (
     TeamMemberOut,
     TeamOut,
 )
+from app.modules.audit.models import AuditAction
+from app.modules.audit.service import AuditContext, record
 from app.modules.auth import emails
 from app.modules.users.models import User
 
@@ -44,10 +46,17 @@ async def list_specializations(session: AsyncSession) -> list[Specialization]:
 
 
 async def create_specialization(
-    session: AsyncSession, data: SpecializationCreateIn
+    session: AsyncSession, data: SpecializationCreateIn, admin: User, audit: AuditContext
 ) -> Specialization:
     spec = Specialization(slug=data.slug, name=data.name)
     session.add(spec)
+    record(
+        session,
+        audit,
+        admin.id,
+        AuditAction.SPECIALIZATION_CREATED,
+        details={"slug": data.slug},
+    )
     try:
         await session.commit()
     except IntegrityError as exc:
@@ -222,7 +231,7 @@ async def _get_profile_with_user(session: AsyncSession, advocate_id: uuid.UUID) 
 
 
 async def verify_advocate(
-    session: AsyncSession, admin: User, advocate_id: uuid.UUID
+    session: AsyncSession, admin: User, advocate_id: uuid.UUID, audit: AuditContext
 ) -> AdminAdvocateOut:
     profile = await _get_profile_with_user(session, advocate_id)
     if not profile.user.is_active:
@@ -235,6 +244,14 @@ async def verify_advocate(
         profile.is_verified = True
         profile.verified_at = datetime.now(UTC)
         profile.verified_by_id = admin.id
+        record(
+            session,
+            audit,
+            admin.id,
+            AuditAction.ADVOCATE_VERIFIED,
+            entity_type="user",
+            entity_id=advocate_id,
+        )
         await session.commit()
         subject, body = emails.advocate_verified(profile.full_name)
         await enqueue_email(profile.user.email, subject, body)
@@ -243,13 +260,21 @@ async def verify_advocate(
 
 
 async def unverify_advocate(
-    session: AsyncSession, admin: User, advocate_id: uuid.UUID
+    session: AsyncSession, admin: User, advocate_id: uuid.UUID, audit: AuditContext
 ) -> AdminAdvocateOut:
     profile = await _get_profile_with_user(session, advocate_id)
     if profile.is_verified:
         profile.is_verified = False
         profile.verified_at = None
         profile.verified_by_id = None
+        record(
+            session,
+            audit,
+            admin.id,
+            AuditAction.ADVOCATE_UNVERIFIED,
+            entity_type="user",
+            entity_id=advocate_id,
+        )
         await session.commit()
         logger.info("advocate_unverified", advocate_id=str(advocate_id), admin_id=str(admin.id))
     return _admin_out(profile)
@@ -395,13 +420,22 @@ async def remove_member(
 
 
 async def to_team_out(session: AsyncSession, team: AdvocateTeam) -> TeamOut:
-    ids = [team.lead_id, *(m.advocate_id for m in team.members)]
+    return (await to_team_outs(session, [team]))[0]
+
+
+async def to_team_outs(session: AsyncSession, teams: list[AdvocateTeam]) -> list[TeamOut]:
+    """One name lookup for all teams (no query per team)."""
+    ids = {t.lead_id for t in teams} | {m.advocate_id for t in teams for m in t.members}
     result = await session.execute(
         select(AdvocateProfile.user_id, AdvocateProfile.full_name).where(
             AdvocateProfile.user_id.in_(ids)
         )
     )
     names = dict(result.all())
+    return [_team_out(team, names) for team in teams]
+
+
+def _team_out(team: AdvocateTeam, names: dict[uuid.UUID, str]) -> TeamOut:
     return TeamOut(
         id=team.id,
         name=team.name,

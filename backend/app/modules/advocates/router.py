@@ -20,12 +20,12 @@ from app.modules.advocates.schemas import (
     TeamOut,
     TeamUpdateIn,
 )
-from app.modules.auth.deps import require_roles
+from app.modules.audit.service import AuditDep, admin_viewed
+from app.modules.auth.deps import AdminUser, require_roles
 from app.modules.users.avatars import avatar_url
 from app.modules.users.models import User, UserRole
 
 AdvocateUser = Annotated[User, Depends(require_roles(UserRole.ADVOCATE))]
-AdminUser = Annotated[User, Depends(require_roles(UserRole.ADMIN))]
 
 router = APIRouter(prefix="/advocates", tags=["advocates"])
 specializations_router = APIRouter(prefix="/specializations", tags=["advocates"])
@@ -108,9 +108,10 @@ async def list_specializations(session: SessionDep) -> list[SpecializationOut]:
     "", response_model=SpecializationOut, status_code=status.HTTP_201_CREATED
 )
 async def create_specialization(
-    data: SpecializationCreateIn, _: AdminUser, session: SessionDep
+    data: SpecializationCreateIn, admin: AdminUser, session: SessionDep, audit: AuditDep
 ) -> SpecializationOut:
-    return SpecializationOut.model_validate(await service.create_specialization(session, data))
+    spec = await service.create_specialization(session, data, admin, audit)
+    return SpecializationOut.model_validate(spec)
 
 
 # ---------------------------------------------------------------- teams
@@ -118,9 +119,7 @@ async def create_specialization(
 
 @teams_router.get("", response_model=list[TeamOut], summary="Teams I lead or belong to")
 async def list_teams(user: AdvocateUser, session: SessionDep) -> list[TeamOut]:
-    return [
-        await service.to_team_out(session, t) for t in await service.list_my_teams(session, user)
-    ]
+    return await service.to_team_outs(session, await service.list_my_teams(session, user))
 
 
 @teams_router.post("", response_model=TeamOut, status_code=status.HTTP_201_CREATED)
@@ -172,7 +171,7 @@ async def remove_team_member(
 # ---------------------------------------------------------------- admin
 
 
-@admin_router.get("", response_model=Page[AdminAdvocateOut])
+@admin_router.get("", response_model=Page[AdminAdvocateOut], dependencies=[Depends(admin_viewed)])
 async def admin_list_advocates(
     _: AdminUser,
     session: SessionDep,
@@ -191,13 +190,13 @@ async def admin_list_advocates(
     description="Requires the advocate to have verified their email address.",
 )
 async def verify_advocate(
-    advocate_id: uuid.UUID, admin: AdminUser, session: SessionDep
+    advocate_id: uuid.UUID, admin: AdminUser, session: SessionDep, audit: AuditDep
 ) -> AdminAdvocateOut:
-    return await service.verify_advocate(session, admin, advocate_id)
+    return await service.verify_advocate(session, admin, advocate_id, audit)
 
 
 @admin_router.post("/{advocate_id}/unverify", response_model=AdminAdvocateOut)
 async def unverify_advocate(
-    advocate_id: uuid.UUID, admin: AdminUser, session: SessionDep
+    advocate_id: uuid.UUID, admin: AdminUser, session: SessionDep, audit: AuditDep
 ) -> AdminAdvocateOut:
-    return await service.unverify_advocate(session, admin, advocate_id)
+    return await service.unverify_advocate(session, admin, advocate_id, audit)

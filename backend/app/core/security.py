@@ -55,6 +55,8 @@ class TokenPayload:
     exp: datetime
     ver: int = 0
     role: str | None = None
+    # True only for sessions that passed a TOTP check at login (carried through refresh).
+    mfa: bool = False
 
 
 class InvalidTokenError(Exception):
@@ -73,6 +75,7 @@ def create_token(
     *,
     version: int = 0,
     role: str | None = None,
+    mfa: bool = False,
 ) -> tuple[str, TokenPayload]:
     now = datetime.now(UTC)
     payload = TokenPayload(
@@ -83,6 +86,7 @@ def create_token(
         exp=now + ttl,
         ver=version,
         role=role,
+        mfa=mfa,
     )
     claims: dict[str, Any] = {
         "sub": str(user_id),
@@ -94,6 +98,8 @@ def create_token(
     }
     if role is not None:
         claims["role"] = role
+    if mfa:
+        claims["mfa"] = True
     return _encode(claims), payload
 
 
@@ -116,6 +122,7 @@ def decode_token(token: str, expected_type: TokenType) -> TokenPayload:
             exp=datetime.fromtimestamp(claims["exp"], UTC),
             ver=int(claims["ver"]),
             role=claims.get("role"),
+            mfa=claims.get("mfa") is True,
         )
     except jwt.ExpiredSignatureError as exc:
         raise InvalidTokenError("Token has expired") from exc

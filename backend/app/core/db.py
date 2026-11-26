@@ -42,6 +42,17 @@ engine = create_async_engine(
     _settings.database_url,
     echo=_settings.db_echo,
     pool_pre_ping=True,
+    pool_size=_settings.db_pool_size,
+    max_overflow=_settings.db_max_overflow,
+    pool_timeout=_settings.db_pool_timeout_seconds,
+    pool_recycle=_settings.db_pool_recycle_seconds,
+    connect_args={
+        "server_settings": {
+            "statement_timeout": str(_settings.db_statement_timeout_ms),
+            "idle_in_transaction_session_timeout": str(_settings.db_idle_in_transaction_timeout_ms),
+            "application_name": "legalpro-api",
+        }
+    },
 )
 
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)

@@ -9,13 +9,11 @@ from app.core.pagination import Page, PageDep, make_page
 from app.modules.audit import service
 from app.modules.audit.models import AuditAction
 from app.modules.audit.schemas import AuditLogOut
-from app.modules.auth.deps import require_roles
-from app.modules.users.models import UserRole
 
 router = APIRouter(
     prefix="/admin/audit-logs",
     tags=["admin"],
-    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+    dependencies=[Depends(service.admin_viewed)],  # includes the admin + MFA check
 )
 
 

@@ -31,10 +31,15 @@ COPY --from=builder --chown=app:app /app /app
 
 # Only trust X-Forwarded-For / X-Forwarded-Proto from these proxy IPs (uvicorn reads this env var).
 # Set it to the reverse proxy / load balancer address in production, never "*".
+# WEB_CONCURRENCY: uvicorn worker processes (about 2 per CPU core is a good start).
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    FORWARDED_ALLOW_IPS=127.0.0.1
+    FORWARDED_ALLOW_IPS=127.0.0.1 \
+    WEB_CONCURRENCY=2 \
+    PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+
+RUN mkdir -p /tmp/prometheus && chown app:app /tmp/prometheus
 
 USER app
 EXPOSE 8000
@@ -42,4 +47,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status == 200 else 1)"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+# Production: several workers, no reload, graceful shutdown. Migrations run separately.
+CMD ["/app/docker/start-api.sh"]

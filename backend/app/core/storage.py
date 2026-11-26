@@ -38,7 +38,14 @@ def content_disposition(filename: str) -> str:
 class S3Storage:
     def __init__(self) -> None:
         self._session = aioboto3.Session()
-        self._config = Config(signature_version="s3v4", s3={"addressing_style": "path"})
+        s = get_settings()
+        self._config = Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            connect_timeout=s.external_connect_timeout_seconds,
+            read_timeout=s.external_read_timeout_seconds,
+            retries={"max_attempts": 3, "mode": "standard"},
+        )
         # Sync botocore client, created once: presigning is local CPU work, no network.
         self._signer: Any = None
 

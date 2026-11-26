@@ -16,6 +16,7 @@ from app.core.db import SessionLocal
 from app.modules.bookings import service as bookings
 from app.modules.cases import service as cases
 from app.modules.payments import service as payments
+from app.modules.users import account
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
@@ -69,3 +70,13 @@ async def issue_refund(ctx: Any, *, payment_id: str) -> str:
 async def send_hearing_reminder(ctx: Any, *, hearing_id: str, kind: str, start_ts: int) -> int:
     async with _session(ctx) as session:
         return await cases.send_hearing_reminder(session, uuid.UUID(hearing_id), kind, start_ts)
+
+
+async def delete_account(ctx: Any, *, user_id: str, scheduled_ts: int) -> str:
+    async with _session(ctx) as session:
+        return await account.run_scheduled_deletion(session, uuid.UUID(user_id), scheduled_ts)
+
+
+async def purge_due_deletions(ctx: Any) -> int:
+    async with _session(ctx) as session:
+        return await account.purge_due_deletions(session)

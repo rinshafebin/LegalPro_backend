@@ -13,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.core.errors import AppError
+from app.core.http import TimeoutSession
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -43,7 +44,8 @@ class PaymentGateway(Protocol):
 class RazorpayGateway:
     def __init__(self, key_id: str, key_secret: str) -> None:
         self._key_id = key_id
-        self._client = razorpay.Client(auth=(key_id, key_secret))
+        # Timeouts on every call: the SDK's own session would wait indefinitely.
+        self._client = razorpay.Client(session=TimeoutSession(), auth=(key_id, key_secret))
 
     @property
     def key_id(self) -> str:

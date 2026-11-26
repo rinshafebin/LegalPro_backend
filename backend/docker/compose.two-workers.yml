@@ -1,7 +1,8 @@
-# Run the API as two uvicorn worker processes (no autoreload), to exercise cross-process
-# WebSocket fan-out over Redis:
+# Run the API with the production command (docker/start-api.sh): two uvicorn workers, no
+# autoreload, graceful shutdown. Useful to check cross-worker WebSocket fan-out and metrics:
 #   docker compose -f docker-compose.yml -f docker/compose.two-workers.yml up -d --build
 services:
   api:
-    command:
-      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers"]
+    command: ["/app/docker/start-api.sh"]
+    environment:
+      WEB_CONCURRENCY: "2"

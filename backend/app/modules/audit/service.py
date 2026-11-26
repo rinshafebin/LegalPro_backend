@@ -15,10 +15,12 @@ from fastapi import Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import SessionDep
 from app.core.pagination import PageParams, paginate
 from app.core.rate_limit import client_ip
 from app.modules.audit.models import AuditAction, AuditLog
 from app.modules.audit.schemas import AuditLogOut
+from app.modules.auth.deps import AdminUser
 from app.modules.cases.models import Case
 from app.modules.users.models import User
 
@@ -76,6 +78,23 @@ def record(
             details=details,
         )
     )
+
+
+async def admin_viewed(
+    request: Request, admin: AdminUser, session: SessionDep, ctx: AuditDep
+) -> None:
+    """Router dependency for admin read endpoints: every admin look is recorded too.
+
+    Depends on the admin check itself, so nothing is recorded for refused requests.
+    """
+    record(
+        session,
+        ctx,
+        admin.id,
+        AuditAction.ADMIN_VIEWED,
+        details={"path": request.url.path, "query": request.url.query[:500]},
+    )
+    await session.commit()
 
 
 async def list_logs(

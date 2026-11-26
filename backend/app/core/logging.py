@@ -11,22 +11,63 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import get_settings
 
-_TICKET = re.compile(r"(ticket=)[^\s\"&]+")
+# Keys whose values are never logged, whatever they contain.
+SENSITIVE_KEYS = frozenset(
+    {
+        "password",
+        "new_password",
+        "current_password",
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "mfa_token",
+        "ticket",
+        "code",
+        "otp",
+        "secret",
+        "authorization",
+        "cookie",
+        "body",
+        "email",
+        "to",
+        "phone",
+    }
+)
+_PATTERNS = (
+    (re.compile(r"(ticket|token|code|password)=[^\s\"&]+", re.I), r"\1=[redacted]"),
+    (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.I), "Bearer [redacted]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"), "[jwt]"),
+    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[email]"),
+)
+REDACTED = "[redacted]"
+
+
+def scrub_text(text: str) -> str:
+    for pattern, replacement in _PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def redact_secrets(
     _logger: Any, _method: str, event_dict: structlog.types.EventDict
 ) -> structlog.types.EventDict:
-    """Uvicorn logs WebSocket URLs with their query string; hide the (single-use) ticket."""
-    event = event_dict.get("event")
-    if isinstance(event, str) and "ticket=" in event:
-        event_dict["event"] = _TICKET.sub(r"\1[redacted]", event)
+    """Last line of defence: no tokens, passwords, codes, emails or message text in logs.
+
+    Values under sensitive keys are replaced; every string value (the message itself,
+    uvicorn's access lines, rendered tracebacks) has emails, JWTs, Bearer tokens and
+    `ticket=`/`token=`/`code=` values masked.
+    """
+    for key, value in list(event_dict.items()):
+        if key.lower() in SENSITIVE_KEYS:
+            event_dict[key] = REDACTED
+        elif isinstance(value, str):
+            event_dict[key] = scrub_text(value)
     return event_dict
 
 
-def configure_logging() -> None:
-    settings = get_settings()
-    shared: list[structlog.types.Processor] = [
+def shared_processors() -> list[structlog.types.Processor]:
+    return [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
@@ -34,35 +75,39 @@ def configure_logging() -> None:
         structlog.processors.StackInfoRenderer(),
         redact_secrets,
     ]
+
+
+def build_formatter(json_output: bool) -> structlog.stdlib.ProcessorFormatter:
     renderer: structlog.types.Processor = (
-        structlog.processors.JSONRenderer()
-        if settings.log_json
-        else structlog.dev.ConsoleRenderer()
+        structlog.processors.JSONRenderer() if json_output else structlog.dev.ConsoleRenderer()
+    )
+    return structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=shared_processors(),
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.processors.format_exc_info,
+            redact_secrets,  # again: rendered exceptions can quote SQL parameters
+            renderer,
+        ],
     )
 
+
+def configure_logging() -> None:
+    settings = get_settings()
     structlog.configure(
-        processors=[*shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        processors=[*shared_processors(), structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-
-    formatter = structlog.stdlib.ProcessorFormatter(
-        foreign_pre_chain=shared,
-        processors=[
-            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            structlog.processors.format_exc_info,
-            renderer,
-        ],
-    )
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(formatter)
+    handler.setFormatter(build_formatter(settings.log_json))
 
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(settings.log_level.upper())
 
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "arq"):
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         lg = logging.getLogger(name)
         lg.handlers = []
         lg.propagate = True

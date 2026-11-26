@@ -3,7 +3,19 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, Integer, String, Uuid, false, true
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    Index,
+    Integer,
+    String,
+    Uuid,
+    false,
+    text,
+    true,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base, TimestampMixin
@@ -21,7 +33,15 @@ class UserRole(StrEnum):
 
 class User(TimestampMixin, Base):
     __tablename__ = "users"
-    __table_args__ = (CheckConstraint("email = lower(email)", name="email_lowercase"),)
+    __table_args__ = (
+        CheckConstraint("email = lower(email)", name="email_lowercase"),
+        # The daily deletion sweep only looks at accounts with a pending deletion.
+        Index(
+            "ix_users_deletion_scheduled_for",
+            "deletion_scheduled_for",
+            postgresql_where=text("deletion_scheduled_for IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), unique=True)
@@ -48,6 +68,11 @@ class User(TimestampMixin, Base):
     # Bumped on password reset / "log out everywhere"; tokens with an older version are rejected.
     token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Account deletion: requested -> deactivated, anonymized after the grace period unless the
+    # user logs back in. `deleted_at` is set once personal data has been wiped.
+    deletion_scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     client_profile: Mapped["ClientProfile | None"] = relationship(
         back_populates="user", lazy="raise", cascade="all, delete-orphan", uselist=False
